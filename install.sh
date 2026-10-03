@@ -224,7 +224,7 @@ summary() {
         printf '%s\n' "$(bold "Kurogane updated") $_old_version -> $_new_version at $_dest" >&2
     fi
 
-    _shadow="$(command -v kurogane 2>/dev/null || true)"
+    _shadow="$(find_cmd kurogane || true)"
     if [ -n "$_shadow" ] && [ "$_shadow" != "$_dest" ] && on_path "$_bin_dir"; then
         warn "'$_shadow' comes earlier on PATH and shadows this install;
   remove it (e.g. 'cargo uninstall kurogane-cli') or reorder PATH"
@@ -458,6 +458,23 @@ die() {
 
 check_cmd() {
     command -v "$1" >/dev/null 2>&1
+}
+
+# Prints the first executable named $1 on PATH. Not `command -v`: ksh93
+# shell-quotes the paths it prints when they contain spaces.
+find_cmd() {
+    _fc_rest="${PATH:-}:"
+    while [ -n "$_fc_rest" ]; do
+        _fc_dir="${_fc_rest%%:*}"
+        _fc_rest="${_fc_rest#*:}"
+        [ -n "$_fc_dir" ] || _fc_dir=.
+        _fc_dir="${_fc_dir%/}"
+        if [ -f "$_fc_dir/$1" ] && [ -x "$_fc_dir/$1" ]; then
+            printf '%s\n' "$_fc_dir/$1"
+            return 0
+        fi
+    done
+    return 1
 }
 
 need_cmd() {

@@ -51,14 +51,16 @@ sha256() {
     fi
 }
 
+# The version the fixture's "latest" release reports.
+LATEST=0.0.6
 TRIPLES="x86_64-unknown-linux-musl aarch64-unknown-linux-musl x86_64-apple-darwin aarch64-apple-darwin"
 for t in $TRIPLES; do
     make_release 0.0.5 "$t"
-    make_release 0.0.6 "$t"
+    make_release $LATEST "$t"
 done
-# "latest" points at 0.0.6, like GitHub's /releases/latest/download redirect.
+# "latest" points at $LATEST, like GitHub's /releases/latest/download redirect.
 mkdir -p "$FIX/releases/latest"
-cp -R "$FIX/releases/download/v0.0.6" "$FIX/releases/latest/download"
+cp -R "$FIX/releases/download/v$LATEST" "$FIX/releases/latest/download"
 
 # 0.0.7: checksum file does not match the archive.
 make_release 0.0.7 x86_64-unknown-linux-musl
@@ -217,8 +219,8 @@ tmp_empty() { [ -z "$(ls -A "$CASE/tmp")" ]; }
 new_case fresh
 run_installer --
 check fresh '[ $RC -eq 0 ]'
-check fresh '[ "$("$(BIN)" --version)" = "kurogane 0.0.6" ]'
-check fresh 'has "Kurogane 0.0.6 installed"'
+check fresh '[ "$("$(BIN)" --version)" = "kurogane $LATEST" ]'
+check fresh 'has "Kurogane $LATEST installed"'
 check fresh 'has "kurogane new my-app"'
 check fresh 'has "kurogane dev"'
 check fresh 'has "verified sha256"'
@@ -229,8 +231,9 @@ check fresh 'grep -q "x86_64-unknown-linux-musl.tar.gz" "$CASE/dl.log"'
 check fresh 'grep -q -- "--tlsv1.2" "$CASE/dl.log"'
 check fresh '[ -z "$(ls -A "$H/.kurogane/bin" | grep -v "^kurogane$")" ]'
 
-# The generated env script really puts kurogane on PATH.
-check env-script '[ "$(env -i HOME="$H" PATH=/usr/bin:/bin "$TEST_SHELL_PATH" -c ". \"$H/.kurogane/env\"; command -v kurogane")" = "$(BIN)" ]'
+# The generated env script really puts kurogane on PATH. (Not `command -v`:
+# ksh93 quotes paths with spaces, see find_cmd in install.sh.)
+check env-script '[ "$(env -i HOME="$H" PATH=/usr/bin:/bin "$TEST_SHELL_PATH" -c ". \"$H/.kurogane/env\"; kurogane --version")" = "kurogane $LATEST" ]'
 check env-script '[ "$(env -i HOME="$H" PATH=/usr/bin:/bin "$TEST_SHELL_PATH" -c ". \"$H/.kurogane/env\"; . \"$H/.kurogane/env\"; echo \"\$PATH\"" | tr : "\n" | grep -cxF "$H/.kurogane/bin")" = 1 ]'
 
 # Running again changes nothing but the binary.
@@ -248,9 +251,9 @@ new_case upgrade
 run_installer -- --version 0.0.5
 check upgrade-pinned '[ $RC -eq 0 ] && [ "$("$(BIN)" --version)" = "kurogane 0.0.5" ]'
 check upgrade-pinned 'grep -q "download/v0.0.5/" "$CASE/dl.log"'
-run_installer KUROGANE_VERSION=v0.0.6 --
-check upgrade '[ $RC -eq 0 ] && [ "$("$(BIN)" --version)" = "kurogane 0.0.6" ]'
-check upgrade 'has "updated 0.0.5 -> 0.0.6"'
+run_installer KUROGANE_VERSION=v$LATEST --
+check upgrade '[ $RC -eq 0 ] && [ "$("$(BIN)" --version)" = "kurogane $LATEST" ]'
+check upgrade 'has "updated 0.0.5 -> $LATEST"'
 
 new_case bad-checksum
 run_installer -- --version 0.0.5
@@ -352,7 +355,18 @@ new_case custom-dir
 run_installer -- --install-dir "$H/my tools/bin"
 check custom-dir '[ $RC -eq 0 ] && [ -x "$H/my tools/bin/kurogane" ]'
 check custom-dir 'grep -qF "$H/my tools/bin" "$H/.kurogane/env"'
-check custom-dir '[ "$(env -i HOME="$H" PATH=/usr/bin:/bin "$TEST_SHELL_PATH" -c ". \"$H/.kurogane/env\"; command -v kurogane")" = "$H/my tools/bin/kurogane" ]'
+check custom-dir '[ "$(env -i HOME="$H" PATH=/usr/bin:/bin "$TEST_SHELL_PATH" -c ". \"$H/.kurogane/env\"; kurogane --version")" = "kurogane $LATEST" ]'
+
+# Another kurogane earlier on PATH is reported; the fresh install itself never is.
+new_case shadowed
+mkdir -p "$H/old bin"
+printf '#!/bin/sh\necho kurogane 0.0.1\n' >"$H/old bin/kurogane"
+chmod 755 "$H/old bin/kurogane"
+run_installer "PATH=$H/old bin:$H/.kurogane/bin:$STUBS:$TOOLS" --
+check shadowed '[ $RC -eq 0 ] && has "$H/old bin/kurogane'"'"' comes earlier on PATH"'
+new_case not-shadowed
+run_installer "PATH=$H/my tools/bin:$STUBS:$TOOLS" -- --install-dir "$H/my tools/bin"
+check not-shadowed '[ $RC -eq 0 ] && [ -x "$H/my tools/bin/kurogane" ] && ! has "shadows this install"'
 
 new_case relative-dir
 run_installer -- --install-dir rel/bin
