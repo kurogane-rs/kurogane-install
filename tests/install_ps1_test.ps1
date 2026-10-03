@@ -56,21 +56,28 @@ function New-Release([string]$Version, [string]$Triple, [string]$Line = "kurogan
     Set-Content -LiteralPath "$zip.sha256" -Value "$hash *kurogane-cli-$Triple.zip" -NoNewline
 }
 
+# The version the fixture's "latest" release reports.
+$LatestVersion = '0.0.6'
+# What the installer picks on this machine without KUROGANE_ARCH (x64 or ARM64 runner).
+$nativeArch = (Get-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment').PROCESSOR_ARCHITECTURE
+$hostTriple = if ($nativeArch -eq 'ARM64') { 'aarch64-pc-windows-msvc' } else { 'x86_64-pc-windows-msvc' }
+
 Write-Host 'building fixtures...'
 foreach ($t in 'x86_64-pc-windows-msvc', 'aarch64-pc-windows-msvc') {
     New-Release '0.0.5' $t
-    New-Release '0.0.6' $t
+    New-Release $LatestVersion $t
 }
 $latest = Join-Path $fixture 'releases\latest\download'
 New-Item -ItemType Directory -Force -Path (Split-Path $latest) | Out-Null
-Copy-Item -Recurse (Join-Path $fixture 'releases\download\v0.0.6') $latest
-New-Release '0.0.7' 'x86_64-pc-windows-msvc'
-Set-Content -LiteralPath (Join-Path $fixture 'releases\download\v0.0.7\kurogane-cli-x86_64-pc-windows-msvc.zip.sha256') -Value (('0' * 64) + ' *kurogane-cli-x86_64-pc-windows-msvc.zip')
-New-Release '0.0.8' 'x86_64-pc-windows-msvc' -Line '' -ExitCode 3
-New-Release '0.0.9' 'x86_64-pc-windows-msvc' -Line 'kurogane 1.2.3'
-New-Release '0.1.0' 'x86_64-pc-windows-msvc' -Nested
+Copy-Item -Recurse (Join-Path $fixture "releases\download\v$LatestVersion") $latest
+# The failure fixtures exist only for this machine's triple.
+New-Release '0.0.7' $hostTriple
+Set-Content -LiteralPath (Join-Path $fixture "releases\download\v0.0.7\kurogane-cli-$hostTriple.zip.sha256") -Value (('0' * 64) + " *kurogane-cli-$hostTriple.zip")
+New-Release '0.0.8' $hostTriple -Line '' -ExitCode 3
+New-Release '0.0.9' $hostTriple -Line 'kurogane 1.2.3'
+New-Release '0.1.0' $hostTriple -Nested
 # A zip that is not one, with a checksum that matches it: extraction itself must fail.
-$corrupt = Join-Path $fixture 'releases\download\v0.1.1\kurogane-cli-x86_64-pc-windows-msvc.zip'
+$corrupt = Join-Path $fixture "releases\download\v0.1.1\kurogane-cli-$hostTriple.zip"
 New-Item -ItemType Directory -Force -Path (Split-Path $corrupt) | Out-Null
 [IO.File]::WriteAllBytes($corrupt, [byte[]](1..200))
 Set-Content -LiteralPath "$corrupt.sha256" -Value (Get-FileHash -LiteralPath $corrupt -Algorithm SHA256).Hash.ToLowerInvariant() -NoNewline
@@ -152,12 +159,12 @@ try {
     New-Case 'fresh'
     Invoke-Installer
     Check 'exit 0' { $case.Code -eq 0 }
-    Check 'installed latest' { (ExeVersion (Exe)) -eq 'kurogane 0.0.6' }
-    Check 'summary' { (Has 'Kurogane 0.0.6 installed') -and (Has 'kurogane new my-app') -and (Has 'kurogane dev') }
+    Check 'installed latest' { (ExeVersion (Exe)) -eq "kurogane $LatestVersion" }
+    Check 'summary' { (Has "Kurogane $LatestVersion installed") -and (Has 'kurogane new my-app') -and (Has 'kurogane dev') }
     Check 'verified' { Has 'verified sha256' }
     Check 'user PATH has bin dir' { (UserPath) -eq $case.Bin }
     Check 'user PATH is REG_EXPAND_SZ' { (UserPathKind) -eq 'ExpandString' }
-    Check 'x64 artifact' { (Get-Content $case.Log) -match 'x86_64-pc-windows-msvc\.zip' }
+    Check "native artifact ($hostTriple)" { (Get-Content $case.Log) -match [regex]::Escape("$hostTriple.zip") }
     Check 'basic parsing' { -not ((Get-Content $case.Log) -match 'basic=False') }
     Check 'no leftovers' { (Leftovers) -eq 0 }
 
@@ -179,15 +186,15 @@ try {
     New-Case 'upgrade'
     Invoke-Installer -Env @{ KUROGANE_VERSION = '0.0.5' }
     Check 'pinned' { (ExeVersion (Exe)) -eq 'kurogane 0.0.5' }
-    Invoke-Installer -Env @{ KUROGANE_VERSION = 'v0.0.6' }
-    Check 'upgraded' { $case.Code -eq 0 -and (ExeVersion (Exe)) -eq 'kurogane 0.0.6' -and (Has 'updated 0.0.5 -> 0.0.6') }
+    Invoke-Installer -Env @{ KUROGANE_VERSION = "v$LatestVersion" }
+    Check 'upgraded' { $case.Code -eq 0 -and (ExeVersion (Exe)) -eq "kurogane $LatestVersion" -and (Has "updated 0.0.5 -> $LatestVersion") }
 
     New-Case 'upgrade-while-running'
     Invoke-Installer -Env @{ KUROGANE_VERSION = '0.0.5' }
     $held = Start-Process -FilePath (Exe) -ArgumentList '--hold' -PassThru -WindowStyle Hidden
     try {
         Invoke-Installer
-        Check 'upgrade succeeds while old exe runs' { $case.Code -eq 0 -and (ExeVersion (Exe)) -eq 'kurogane 0.0.6' }
+        Check 'upgrade succeeds while old exe runs' { $case.Code -eq 0 -and (ExeVersion (Exe)) -eq "kurogane $LatestVersion" }
     } finally {
         Stop-Process -Id $held.Id -Force -ErrorAction SilentlyContinue
         $held.WaitForExit()
@@ -250,7 +257,7 @@ try {
     New-Case 'custom-dir'
     $custom = Join-Path $case.Dir 'my tools\bin'
     Invoke-Installer -Env @{ KUROGANE_INSTALL_DIR = $custom }
-    Check 'installed with spaces in path' { $case.Code -eq 0 -and (ExeVersion (Join-Path $custom 'kurogane.exe')) -eq 'kurogane 0.0.6' -and (UserPath) -eq $custom }
+    Check 'installed with spaces in path' { $case.Code -eq 0 -and (ExeVersion (Join-Path $custom 'kurogane.exe')) -eq "kurogane $LatestVersion" -and (UserPath) -eq $custom }
 
     New-Case 'relative-dir'
     Invoke-Installer -Env @{ KUROGANE_INSTALL_DIR = 'rel\bin' }
@@ -274,10 +281,10 @@ try {
     # instead of exiting the host (which would close the user's window).
     New-Case 'iex'
     Invoke-Installer -Mode iex
-    Check 'irm | iex form installs' { $case.Code -eq 0 -and (ExeVersion (Exe)) -eq 'kurogane 0.0.6' }
+    Check 'irm | iex form installs' { $case.Code -eq 0 -and (ExeVersion (Exe)) -eq "kurogane $LatestVersion" }
     New-Case 'iex-restricted'
     Invoke-Installer -Mode iex -Policy Restricted
-    Check 'irm | iex installs under the default Restricted policy' { $case.Code -eq 0 -and (ExeVersion (Exe)) -eq 'kurogane 0.0.6' }
+    Check 'irm | iex installs under the default Restricted policy' { $case.Code -eq 0 -and (ExeVersion (Exe)) -eq "kurogane $LatestVersion" }
     New-Case 'iex-failure'
     Invoke-Installer -Mode iex -Env @{ KUROGANE_ARCH = 'x86' }
     Check 'failure returns to caller' { $case.Code -ne 0 -and (Has 'runner: installer threw') -and (Has 'Kurogane was not installed') }
@@ -285,12 +292,6 @@ try {
     New-Case 'scriptblock-args'
     Invoke-Installer -Mode scriptblock -ScriptArgs 'Version=0.0.5'
     Check 'parameters work' { $case.Code -eq 0 -and (ExeVersion (Exe)) -eq 'kurogane 0.0.5' }
-
-    New-Case 'native-arch'
-    Invoke-Installer
-    $native = (Get-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment').PROCESSOR_ARCHITECTURE
-    $expect = if ($native -eq 'ARM64') { 'aarch64' } else { 'x86_64' }
-    Check "detects this machine ($native)" { (Get-Content $case.Log) -match "$expect-pc-windows-msvc\.zip" }
 } finally {
     Remove-Item -LiteralPath $regRoot -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
