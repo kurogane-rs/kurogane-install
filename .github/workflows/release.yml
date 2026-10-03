@@ -69,6 +69,10 @@ jobs:
           esac
           case "$VERSION" in *[!0-9A-Za-z.+-]*) echo "::error::invalid version '$VERSION'"; exit 1 ;; esac
 
+          if ! cargo metadata --format-version 1 --locked >/dev/null; then
+            echo "::error::Cargo.lock at '$REF' is out of date. Run cargo check after the version bump and commit Cargo.lock."
+            exit 1
+          fi
           have="$(cargo metadata --no-deps --format-version 1 --locked |
             jq -r '.packages[] | select(.name == "kurogane-cli") | .version')"
           if [ "$have" != "$VERSION" ]; then
