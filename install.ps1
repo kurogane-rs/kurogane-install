@@ -102,7 +102,21 @@ function Install-Kurogane {
         try {
             Expand-Archive -LiteralPath $archivePath -DestinationPath $extracted
         } catch {
-            throw 'the downloaded archive is corrupt'
+            # Expand-Archive is a script module, which a Restricted or AllSigned policy
+            # blocks in PowerShell 7. Windows 10 1803+ ships bsdtar, which reads zip
+            # files and is not subject to the execution policy.
+            $tar = Join-Path $env:SystemRoot 'System32\tar.exe'
+            if (-not (Test-Path -LiteralPath $tar -PathType Leaf)) {
+                throw "cannot extract the download: $($_.Exception.Message)"
+            }
+            if (Test-Path -LiteralPath $extracted) { Remove-Item -LiteralPath $extracted -Recurse -Force }
+            New-Item -ItemType Directory -Path $extracted | Out-Null
+            try {
+                $null = & $tar -xf $archivePath -C $extracted 2>$null
+            } catch {
+                throw 'the downloaded archive is corrupt'
+            }
+            if ($LASTEXITCODE -ne 0) { throw 'the downloaded archive is corrupt' }
         }
         $new = $null
         foreach ($candidate in @((Join-Path $extracted 'kurogane.exe'), (Join-Path $extracted "$package-$target\kurogane.exe"))) {

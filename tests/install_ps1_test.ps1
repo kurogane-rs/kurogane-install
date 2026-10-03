@@ -24,8 +24,6 @@ $script:failed = @()
 
 New-Item -ItemType Directory -Path $fixture | Out-Null
 
-# ---------------------------------------------------------------- fixtures --
-
 # Fake kurogane.exe: prints `kurogane <version>`; `--hold` keeps it running.
 function New-FakeExe([string]$Path, [string]$Line, [int]$ExitCode = 0) {
     $src = @"
@@ -71,6 +69,11 @@ Set-Content -LiteralPath (Join-Path $fixture 'releases\download\v0.0.7\kurogane-
 New-Release '0.0.8' 'x86_64-pc-windows-msvc' -Line '' -ExitCode 3
 New-Release '0.0.9' 'x86_64-pc-windows-msvc' -Line 'kurogane 1.2.3'
 New-Release '0.1.0' 'x86_64-pc-windows-msvc' -Nested
+# A zip that is not one, with a checksum that matches it: extraction itself must fail.
+$corrupt = Join-Path $fixture 'releases\download\v0.1.1\kurogane-cli-x86_64-pc-windows-msvc.zip'
+New-Item -ItemType Directory -Force -Path (Split-Path $corrupt) | Out-Null
+[IO.File]::WriteAllBytes($corrupt, [byte[]](1..200))
+Set-Content -LiteralPath "$corrupt.sha256" -Value (Get-FileHash -LiteralPath $corrupt -Algorithm SHA256).Hash.ToLowerInvariant() -NoNewline
 
 # ----------------------------------------------------------------- runner ---
 
@@ -197,6 +200,14 @@ try {
     Invoke-Installer -Env @{ KUROGANE_VERSION = '0.0.7' }
     Check 'fails' { $case.Code -ne 0 -and (Has 'checksum mismatch') }
     Check 'old install intact' { (ExeVersion (Exe)) -eq 'kurogane 0.0.5' -and (Leftovers) -eq 0 }
+
+    foreach ($policy in '', 'Restricted') {
+        New-Case "corrupt-archive$(if ($policy) { "-$policy" })"
+        Invoke-Installer -Env @{ KUROGANE_VERSION = '0.0.5' }
+        Invoke-Installer -Env @{ KUROGANE_VERSION = '0.1.1' } -Mode iex -Policy $policy
+        Check 'fails' { $case.Code -ne 0 -and (Has 'archive is corrupt') }
+        Check 'old install intact' { (ExeVersion (Exe)) -eq 'kurogane 0.0.5' -and (Leftovers) -eq 0 }
+    }
 
     New-Case 'interrupted'
     Invoke-Installer -Env @{ KUROGANE_VERSION = '0.0.5' }
