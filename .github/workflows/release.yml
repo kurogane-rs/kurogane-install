@@ -1,0 +1,361 @@
+# Builds the kurogane CLI from 0x48piraj/kurogane and publishes it, together
+# with install.sh and install.ps1 from this repository, as a GitHub Release
+# on 0x48piraj/kurogane. Then installs that release with the public
+# one-liners on every target.
+#
+# Run it from the Actions tab (Release -> Run workflow). The version must
+# equal the workspace version at the chosen ref: bump it in kurogane first.
+#
+# A pre-release never becomes "latest", so https://kurogane-rs.org/install.sh
+# keeps serving the previous stable release until a stable run.
+#
+# Needs the secret KUROGANE_RELEASE_TOKEN: a fine-grained token for
+# 0x48piraj/kurogane with "Contents: Read and write" (creates the tag and the
+# release there).
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version without the leading v, e.g. 0.0.6-alpha.1
+        required: true
+        type: string
+      ref:
+        description: kurogane branch, tag or commit to build
+        required: true
+        default: master
+        type: string
+      prerelease:
+        description: Pre-release (does not become latest; kurogane-rs.org is unaffected)
+        required: true
+        default: true
+        type: boolean
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_REPO: 0x48piraj/kurogane
+  VERSION: ${{ inputs.version }}
+  TAG: v${{ inputs.version }}
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      sha: ${{ steps.check.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check version, tag and release
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ inputs.ref }}
+        run: |
+          case "$VERSION" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "::error::version must look like 0.0.6 or 0.0.6-alpha.1, got '$VERSION'"; exit 1 ;;
+          esac
+          case "$VERSION" in *[!0-9A-Za-z.+-]*) echo "::error::invalid version '$VERSION'"; exit 1 ;; esac
+
+          have="$(cargo metadata --no-deps --format-version 1 --locked |
+            jq -r '.packages[] | select(.name == "kurogane-cli") | .version')"
+          if [ "$have" != "$VERSION" ]; then
+            echo "::error::kurogane-cli at '$REF' is $have, not $VERSION. Bump the workspace version first."
+            exit 1
+          fi
+
+          sha="$(git rev-parse HEAD)"
+          # A tag made by hand is fine as long as it is this commit.
+          if tagged="$(git rev-parse -q --verify "refs/tags/$TAG^{commit}")"; then
+            [ "$tagged" = "$sha" ] || { echo "::error::$TAG exists and points at $tagged, not $sha"; exit 1; }
+          fi
+          if gh release view "$TAG" --repo "$SOURCE_REPO" >/dev/null 2>&1; then
+            echo "::error::release $TAG already exists on $SOURCE_REPO"
+            exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Releasing $TAG from $sha (prerelease: ${{ inputs.prerelease }})" >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-musl, runner: ubuntu-24.04 }
+          - { target: aarch64-unknown-linux-musl, runner: ubuntu-24.04-arm }
+          - { target: x86_64-apple-darwin, runner: macos-15-intel }
+          - { target: aarch64-apple-darwin, runner: macos-15 }
+          - { target: x86_64-pc-windows-msvc, runner: windows-2022 }
+          - { target: aarch64-pc-windows-msvc, runner: windows-11-arm }
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      TARGET: ${{ matrix.target }}
+      # No build cache: release binaries are built from a clean checkout.
+      CARGO_PROFILE_RELEASE_LTO: thin
+      CARGO_PROFILE_RELEASE_STRIP: 'true'
+      MACOSX_DEPLOYMENT_TARGET: '12.0'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+
+      - name: Install musl tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends musl-tools
+          # musl-gcc does not see the kernel headers OpenSSL includes; expose them.
+          arch="$(uname -m)"
+          for d in linux asm-generic; do sudo ln -sfn "/usr/include/$d" "/usr/include/$arch-linux-musl/$d"; done
+          sudo ln -sfn "/usr/include/$arch-linux-gnu/asm" "/usr/include/$arch-linux-musl/asm"
+
+      - name: Install Rust
+        run: |
+          if ! command -v rustup >/dev/null; then
+            if [ "$RUNNER_OS" = Windows ]; then
+              case "$TARGET" in aarch64-*) a=aarch64 ;; *) a=x86_64 ;; esac
+              curl --proto '=https' --tlsv1.2 -sSfLo rustup-init.exe "https://win.rustup.rs/$a"
+              ./rustup-init.exe -y --profile minimal --default-toolchain none
+              cygpath -w "$USERPROFILE/.cargo/bin" >> "$GITHUB_PATH"
+              export PATH="$USERPROFILE/.cargo/bin:$PATH"
+            else
+              curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+              echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+              export PATH="$HOME/.cargo/bin:$PATH"
+            fi
+          fi
+          # Installs the toolchain from rust-toolchain.toml.
+          rustup toolchain install
+          rustup target add "$TARGET"
+          rustc -vV
+
+      - name: Build
+        env:
+          RUSTFLAGS: ${{ contains(matrix.target, 'windows') && '-C target-feature=+crt-static' || '' }}
+        # git2/vendored-openssl statically links OpenSSL on Unix (a no-op on Windows), so the
+        # binaries do not need the build machine's libssl. Enabled here rather than in kurogane;
+        # openssl-src is then not in kurogane's Cargo.lock, so each release takes the newest
+        # OpenSSL 3.x and records it below.
+        run: |
+          cargo build -p kurogane-cli --release --locked --target "$TARGET" --features git2/vendored-openssl
+          if [ "$RUNNER_OS" != Windows ]; then
+            ssl="$(cargo tree -p kurogane-cli --locked --target "$TARGET" --features git2/vendored-openssl \
+              -i openssl-src --depth 0 | head -n 1)"
+            echo "$TARGET: $ssl" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Check the binary
+        run: |
+          exe="target/$TARGET/release/kurogane"
+          [ "$RUNNER_OS" = Windows ] && exe="$exe.exe"
+          out="$("$exe" --version)"
+          [ "$out" = "kurogane $VERSION" ] || { echo "::error::--version printed '$out'"; exit 1; }
+          case "$RUNNER_OS" in
+            Linux)
+              file "$exe"
+              file "$exe" | grep -qE 'static(ally|-pie) linked' ;;
+            macOS)
+              # Only system libraries: a Homebrew libssl here breaks every user without Homebrew.
+              otool -L "$exe"
+              ! otool -L "$exe" | tail -n +2 | grep -vE '^\s+(/usr/lib/|/System/Library/)' ;;
+          esac
+
+      - name: Package
+        run: |
+          name="kurogane-cli-$TARGET"
+          mkdir -p out "$name"
+          if [ "$RUNNER_OS" = Windows ]; then
+            cp "target/$TARGET/release/kurogane.exe" "$name/"
+            pwsh -NoProfile -Command "Compress-Archive -Path '$name/kurogane.exe' -DestinationPath 'out/$name.zip'"
+            archive="$name.zip"
+          else
+            cp "target/$TARGET/release/kurogane" "$name/"
+            tar -czf "out/$name.tar.gz" "$name"
+            archive="$name.tar.gz"
+          fi
+          cd out
+          if command -v sha256sum >/dev/null; then sha256sum "$archive"; else shasum -a 256 "$archive"; fi > "$archive.sha256"
+          cat "$archive.sha256"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: build-${{ matrix.target }}
+          path: out/*
+          if-no-files-found: error
+
+  publish:
+    needs: [plan, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: build-*
+          path: out
+          merge-multiple: true
+
+      - name: Add installers and checksums
+        run: |
+          cp install.sh install.ps1 out/
+          cd out
+          for f in install.sh install.ps1; do sha256sum "$f" > "$f.sha256"; done
+          sha256sum *.tar.gz *.zip install.sh install.ps1 > sha256.sum
+          cat sha256.sum
+
+      - name: Attest
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            out/*.tar.gz
+            out/*.zip
+            out/install.sh
+            out/install.ps1
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ secrets.KUROGANE_RELEASE_TOKEN }}
+          SHA: ${{ needs.plan.outputs.sha }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          if [ "$PRERELEASE" = true ]; then flags="--prerelease --latest=false"; else flags="--latest"; fi
+          # shellcheck disable=SC2086
+          gh release create "$TAG" out/* --repo "$SOURCE_REPO" --target "$SHA" \
+            --title "Kurogane $VERSION" --generate-notes $flags
+          echo "Published https://github.com/$SOURCE_REPO/releases/tag/$TAG" >> "$GITHUB_STEP_SUMMARY"
+
+  smoke:
+    # Installs the published release the way users do and checks the result.
+    needs: publish
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-24.04, archive: kurogane-cli-x86_64-unknown-linux-musl.tar.gz }
+          - { runner: ubuntu-24.04-arm, archive: kurogane-cli-aarch64-unknown-linux-musl.tar.gz }
+          - { runner: macos-15, archive: kurogane-cli-aarch64-apple-darwin.tar.gz }
+          - { runner: macos-15-intel, archive: kurogane-cli-x86_64-apple-darwin.tar.gz }
+    runs-on: ${{ matrix.runner }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SCRIPT_URL: https://github.com/0x48piraj/kurogane/releases/download/v${{ inputs.version }}/install.sh
+    steps:
+      - name: Install with the one-liner
+        run: curl --proto '=https' --tlsv1.2 -LsSf "$SCRIPT_URL" | sh -s -- --version "$VERSION"
+
+      - name: Installed binary works and is on PATH for new shells
+        run: |
+          "$HOME/.kurogane/bin/kurogane" --version | grep -x "kurogane $VERSION"
+          env -i HOME="$HOME" PATH=/usr/bin:/bin sh -c '. "$HOME/.profile"; kurogane --version'
+
+      - name: Template clone over HTTPS (vendored OpenSSL, CA discovery)
+        run: |
+          cd "$RUNNER_TEMP"
+          "$HOME/.kurogane/bin/kurogane" new minimal --name smoke --language typescript --yes --ci
+          test -f smoke/Cargo.toml
+
+      - name: Verify the attestation
+        run: |
+          gh release download "$TAG" --repo "$SOURCE_REPO" --pattern "${{ matrix.archive }}" --dir "$RUNNER_TEMP"
+          gh attestation verify "$RUNNER_TEMP/${{ matrix.archive }}" --repo "$GITHUB_REPOSITORY"
+
+      - name: Re-running reinstalls in place
+        run: |
+          curl --proto '=https' --tlsv1.2 -LsSf "$SCRIPT_URL" | sh -s -- --version "$VERSION" 2>&1 | tee out.txt
+          grep -q reinstalled out.txt
+          test "$(grep -c '.kurogane/env' "$HOME/.profile")" = 1
+
+      - name: kurogane-rs.org serves this release
+        if: ${{ !inputs.prerelease }}
+        run: |
+          rm -rf "$HOME/.kurogane"
+          curl --proto '=https' --tlsv1.2 -LsSf https://kurogane-rs.org/install.sh | sh
+          "$HOME/.kurogane/bin/kurogane" --version | grep -x "kurogane $VERSION"
+
+  smoke-alpine:
+    needs: publish
+    runs-on: ubuntu-24.04
+    container: alpine:latest
+    steps:
+      - name: Install with BusyBox only (wget, ash, sha256sum)
+        run: |
+          wget -qO- "https://github.com/$SOURCE_REPO/releases/download/$TAG/install.sh" | sh -s -- --version "$VERSION"
+          "$HOME/.kurogane/bin/kurogane" --version | grep -x "kurogane $VERSION"
+
+  smoke-windows:
+    needs: publish
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-2022, windows-11-arm]
+        shell: [powershell, pwsh]
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Install with the one-liner
+        run: |
+          $env:KUROGANE_VERSION = $env:VERSION
+          irm "https://github.com/$env:SOURCE_REPO/releases/download/$env:TAG/install.ps1" | iex
+          kurogane --version
+
+      - name: Installed for the right architecture and on the user PATH
+        run: |
+          $exe = Join-Path $env:LOCALAPPDATA 'kurogane\bin\kurogane.exe'
+          $v = @(& $exe --version)[0]
+          if ($v -ne "kurogane $env:VERSION") { throw "unexpected version: $v" }
+          $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+          if (-not ($userPath -split ';' -contains (Split-Path $exe))) { throw "not on user PATH: $userPath" }
+          $machine = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment').PROCESSOR_ARCHITECTURE
+          $want = if ($machine -eq 'ARM64') { 'AA64' } else { '8664' }
+          $bytes = [IO.File]::ReadAllBytes($exe)
+          $pe = [BitConverter]::ToInt32($bytes, 0x3C)
+          $arch = '{0:X4}' -f [BitConverter]::ToUInt16($bytes, $pe + 4)
+          if ($arch -ne $want) { throw "PE machine $arch, expected $want for $machine" }
+
+      - name: Template clone over HTTPS
+        run: |
+          Set-Location $env:RUNNER_TEMP
+          kurogane new minimal --name smoke --language typescript --yes --ci
+          if (-not (Test-Path smoke\Cargo.toml)) { throw 'template not generated' }
+
+      - name: Verify the attestation
+        run: |
+          $arch = if ('${{ matrix.runner }}' -eq 'windows-11-arm') { 'aarch64' } else { 'x86_64' }
+          $zip = "kurogane-cli-$arch-pc-windows-msvc.zip"
+          gh release download $env:TAG --repo $env:SOURCE_REPO --pattern $zip --dir $env:RUNNER_TEMP
+          gh attestation verify (Join-Path $env:RUNNER_TEMP $zip) --repo $env:GITHUB_REPOSITORY
+
+      - name: kurogane-rs.org serves this release
+        if: ${{ !inputs.prerelease }}
+        run: |
+          irm https://kurogane-rs.org/install.ps1 | iex
+          $v = @(& (Join-Path $env:LOCALAPPDATA 'kurogane\bin\kurogane.exe') --version)[0]
+          if ($v -ne "kurogane $env:VERSION") { throw "kurogane-rs.org installed $v" }

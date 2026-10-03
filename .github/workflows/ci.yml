@@ -1,0 +1,107 @@
+# Tests install.sh and install.ps1 hermetically (no network, no real release)
+# on every platform and shell they claim to support.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - name: shellcheck (POSIX sh)
+        run: |
+          shellcheck --shell=sh install.sh
+          # The harness evals single-quoted check expressions, which shellcheck
+          # reports as info-level SC2016 by design; hold it to warnings.
+          shellcheck --shell=sh --severity=warning tests/install_sh_test.sh
+      - name: No bashisms
+        run: |
+          sudo apt-get install -y --no-install-recommends devscripts >/dev/null
+          checkbashisms --posix install.sh
+
+  lint-ps1:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v6
+      - name: PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
+          Invoke-ScriptAnalyzer -Path . -Recurse -Severity Error -EnableExit
+      - name: Parses on Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile("$PWD\install.ps1", [ref]$null, [ref]$errors) | Out-Null
+          if ($errors) { $errors; exit 1 }
+
+  sh:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-24.04, shell: dash }
+          - { runner: ubuntu-24.04, shell: bash-posix }
+          - { runner: ubuntu-24.04, shell: busybox }
+          - { runner: ubuntu-24.04, shell: zsh-as-sh }
+          - { runner: ubuntu-24.04, shell: ksh }
+          - { runner: ubuntu-24.04-arm, shell: dash }
+          - { runner: macos-15, shell: sh }
+          - { runner: macos-15, shell: zsh-as-sh }
+          - { runner: macos-15-intel, shell: sh }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Prepare shell
+        id: shell
+        run: |
+          mkdir -p "$RUNNER_TEMP/shells"
+          case "${{ matrix.shell }}" in
+            dash | sh) path="$(command -v "${{ matrix.shell }}")" ;;
+            ksh) sudo apt-get install -y ksh >/dev/null; path="$(command -v ksh)" ;;
+            busybox)
+              sudo apt-get install -y busybox >/dev/null
+              ln -s "$(command -v busybox)" "$RUNNER_TEMP/shells/ash"; path="$RUNNER_TEMP/shells/ash" ;;
+            bash-posix) ln -s "$(command -v bash)" "$RUNNER_TEMP/shells/sh"; path="$RUNNER_TEMP/shells/sh" ;;
+            zsh-as-sh)
+              command -v zsh >/dev/null || sudo apt-get install -y zsh >/dev/null
+              ln -s "$(command -v zsh)" "$RUNNER_TEMP/shells/sh"; path="$RUNNER_TEMP/shells/sh" ;;
+          esac
+          echo "path=$path" >> "$GITHUB_OUTPUT"
+      - name: install.sh tests
+        run: TEST_SHELL="${{ steps.shell.outputs.path }}" sh tests/install_sh_test.sh
+
+  sh-alpine:
+    runs-on: ubuntu-24.04
+    container: alpine:latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: install.sh tests (BusyBox userland, musl host)
+        run: TEST_SHELL=/bin/sh sh tests/install_sh_test.sh
+
+  ps1:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: windows-2022, shell: powershell }
+          - { runner: windows-2022, shell: pwsh }
+          - { runner: windows-11-arm, shell: powershell }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: install.ps1 tests
+        shell: powershell
+        run: .\tests\install_ps1_test.ps1 -Shell ${{ matrix.shell }}
