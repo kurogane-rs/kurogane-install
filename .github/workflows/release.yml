@@ -300,6 +300,12 @@ jobs:
           curl --proto '=https' --tlsv1.2 -LsSf https://kurogane-rs.org/install.sh | sh
           "$HOME/.kurogane/bin/kurogane" --version | grep -x "kurogane $VERSION"
 
+      - name: kurogane self uninstall removes the install
+        run: |
+          "$HOME/.kurogane/bin/kurogane" self uninstall --yes
+          if [ -e "$HOME/.kurogane" ]; then ls -laR "$HOME/.kurogane"; exit 1; fi
+          if grep -F '.kurogane/env' "$HOME/.profile"; then exit 1; fi
+
   smoke-alpine:
     needs: publish
     runs-on: ubuntu-24.04
@@ -363,3 +369,14 @@ jobs:
           irm https://kurogane-rs.org/install.ps1 | iex
           $v = @(& (Join-Path $env:LOCALAPPDATA 'kurogane\bin\kurogane.exe') --version)[0]
           if ($v -ne "kurogane $env:VERSION") { throw "kurogane-rs.org installed $v" }
+
+      - name: kurogane self uninstall removes the install
+        run: |
+          $kuroganeHome = Join-Path $env:LOCALAPPDATA 'kurogane'
+          # kurogane warns on stderr, which Windows PowerShell turns into errors under 'Stop'
+          $ErrorActionPreference = 'Continue'
+          & (Join-Path $kuroganeHome 'bin\kurogane.exe') self uninstall --yes
+          if ($LASTEXITCODE -ne 0) { throw "self uninstall exited with $LASTEXITCODE" }
+          if (Test-Path -LiteralPath $kuroganeHome) { Get-ChildItem -Recurse -Force $kuroganeHome; throw "$kuroganeHome is still there" }
+          $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+          if (($userPath -split ';') -contains (Join-Path $kuroganeHome 'bin')) { throw "still on the user PATH: $userPath" }

@@ -5,7 +5,8 @@
 #
 # Installs the prebuilt `kurogane` CLI into a per-user directory and adds it
 # to PATH. Dependencies such as Rust, Chromium, and platform toolchains are
-# installed or configured later by `kurogane` itself.
+# installed or configured later by `kurogane` itself. What it installed is
+# recorded in <home>/receipt.json, which `kurogane self uninstall` reads.
 #
 # The script only defines functions; `main` runs on the very last line, so a
 # truncated download executes nothing.
@@ -99,6 +100,16 @@ main() {
     esac
     check_safe_path "$_bin_dir"
     check_safe_path "$_home"
+    # The startup files that may source <home>/env, and the fish snippet
+    _zshenv=""
+    _fish_dir=""
+    if [ -n "${HOME:-}" ]; then
+        _zshenv="${ZDOTDIR:-$HOME}/.zshenv"
+        _fish_dir="${XDG_CONFIG_HOME:-$HOME/.config}/fish"
+        check_safe_path "$HOME"
+        check_safe_path "$_zshenv"
+        check_safe_path "$_fish_dir"
+    fi
 
     _version="${_version#v}"
     case "$_version" in
@@ -171,6 +182,9 @@ main() {
         kurogane\ *) _new_version="${_new_version#kurogane }" ;;
         *) die "the downloaded binary did not identify itself as kurogane" ;;
     esac
+    case "$_new_version" in
+        *[!0-9A-Za-z.+-]* | '') die "the downloaded kurogane reports an invalid version: $_new_version" ;;
+    esac
     if [ "$_version" != latest ] && [ "$_new_version" != "$_version" ]; then
         die "asked for $_version but the release contains $_new_version"
     fi
@@ -193,6 +207,7 @@ main() {
         rm -f "$_staged"
         die "cannot replace $_dest"
     fi
+    write_receipt
 
     _path_note=""
     if on_path "$_bin_dir"; then
@@ -420,18 +435,47 @@ EOF
         [ -f "$_rc" ] && add_line "$_rc" "$_line"
     done
     if check_cmd zsh || case "${SHELL:-}" in *zsh) true ;; *) false ;; esac; then
-        add_line "${ZDOTDIR:-$HOME}/.zshenv" "$_line" create
+        add_line "$_zshenv" "$_line" create
     fi
-    _fish="${XDG_CONFIG_HOME:-$HOME/.config}/fish"
-    if check_cmd fish || [ -d "$_fish" ]; then
-        mkdir -p "$_fish/conf.d" &&
-            cat >"$_fish/conf.d/kurogane.fish" <<EOF
+    if check_cmd fish || [ -d "$_fish_dir" ]; then
+        mkdir -p "$_fish_dir/conf.d" &&
+            cat >"$_fish_dir/conf.d/kurogane.fish" <<EOF
 # Added by the Kurogane installer: puts kurogane on PATH.
 if not contains "$2" \$PATH
     set -gx PATH "$2" \$PATH
 end
 EOF
     fi
+}
+
+# write_receipt: records where this install puts things in <home>/receipt.json,
+# for `kurogane self uninstall`. It lists every file the PATH setup may touch,
+# whether or not this run touched it, so a reinstall that skips the PATH setup
+# still records it. The paths passed check_safe_path, so they need no escaping
+# inside JSON strings.
+write_receipt() {
+    _receipt="$_home/receipt.json"
+    _staged_receipt="$_home/.receipt.json.$$"
+    _startup_files=""
+    _fish_conf=null
+    if [ -n "${HOME:-}" ]; then
+        _startup_files="
+    \"$HOME/.profile\",
+    \"$HOME/.bashrc\",
+    \"$HOME/.bash_profile\",
+    \"$HOME/.bash_login\",
+    \"$_zshenv\"
+  "
+        _fish_conf="\"$_fish_dir/conf.d/kurogane.fish\""
+    fi
+    if mkdir -p "$_home" &&
+        printf '{\n  "schema": 1,\n  "version": "%s",\n  "binary": "%s",\n  "env": "%s",\n  "startup_files": [%s],\n  "fish": %s\n}\n' \
+            "$_new_version" "$_dest" "$_home/env" "$_startup_files" "$_fish_conf" >"$_staged_receipt" &&
+        mv -f "$_staged_receipt" "$_receipt"; then
+        return 0
+    fi
+    rm -f "$_staged_receipt"
+    warn "cannot write $_receipt; 'kurogane self uninstall' will not recognise this install"
 }
 
 # add_line <file> <line> [create]: appends <line> unless already present.
@@ -448,13 +492,11 @@ add_line() {
     step Configured "PATH in $1"
 }
 
-# Paths end up inside generated shell code, so refuse characters that would
-# need escaping there.
+# Paths end up inside generated shell code and JSON, so refuse characters
+# that would need escaping there.
 check_safe_path() {
-    _nl='
-'
     case "$1" in
-        *[\"\`\$\\]* | *"$_nl"*) die "unsupported characters in path: $1" ;;
+        *[\"\`\$\\]* | *[[:cntrl:]]*) die "unsupported characters in path: $1" ;;
     esac
 }
 

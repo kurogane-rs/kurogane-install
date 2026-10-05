@@ -7,8 +7,13 @@
 # with LOCALAPPDATA pointed at a scratch directory, downloads served from a
 # local fixture release tree, and the user PATH written to a throwaway
 # registry key (KUROGANE_TEST_ENV_KEY) instead of HKCU\Environment.
+#
+# With -Kurogane pointing at a real kurogane.exe, the round-trip cases also
+# install it and remove it again with `kurogane self uninstall`:
+#   powershell -NoProfile -ExecutionPolicy Bypass -File tests\install_ps1_test.ps1 -Kurogane C:\path\to\kurogane.exe
 param(
-    [string]$Shell = 'powershell'
+    [string]$Shell = 'powershell',
+    [string]$Kurogane = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -42,11 +47,16 @@ public static class Program {
     if (-not (Test-Path -LiteralPath $Path)) { throw "could not build $Path" }
 }
 
-function New-Release([string]$Version, [string]$Triple, [string]$Line = "kurogane $Version", [int]$ExitCode = 0, [switch]$Nested) {
+# -Binary packages that executable
+function New-Release([string]$Version, [string]$Triple, [string]$Line = "kurogane $Version", [int]$ExitCode = 0, [switch]$Nested, [string]$Binary = '') {
     $stage = Join-Path $work "stage\$Version\$Triple"
     $exeDir = if ($Nested) { Join-Path $stage "kurogane-cli-$Triple" } else { $stage }
     New-Item -ItemType Directory -Force -Path $exeDir | Out-Null
-    New-FakeExe (Join-Path $exeDir 'kurogane.exe') $Line $ExitCode
+    if ($Binary) {
+        Copy-Item -LiteralPath $Binary -Destination (Join-Path $exeDir 'kurogane.exe')
+    } else {
+        New-FakeExe (Join-Path $exeDir 'kurogane.exe') $Line $ExitCode
+    }
     $out = Join-Path $fixture "releases\download\v$Version"
     New-Item -ItemType Directory -Force -Path $out | Out-Null
     $zip = Join-Path $out "kurogane-cli-$Triple.zip"
@@ -82,7 +92,7 @@ New-Item -ItemType Directory -Force -Path (Split-Path $corrupt) | Out-Null
 [IO.File]::WriteAllBytes($corrupt, [byte[]](1..200))
 Set-Content -LiteralPath "$corrupt.sha256" -Value (Get-FileHash -LiteralPath $corrupt -Algorithm SHA256).Hash.ToLowerInvariant() -NoNewline
 
-# ----------------------------------------------------------------- runner ---
+# Runner
 
 $caseEnv = 'KUROGANE_VERSION', 'KUROGANE_INSTALL_DIR', 'KUROGANE_NO_MODIFY_PATH', 'KUROGANE_ARCH',
     'KUROGANE_DOWNLOAD_URL', 'KUROGANE_TEST_ENV_KEY', 'FAKE_TRUNCATE', 'DL_LOG', 'GITHUB_PATH', 'LOCALAPPDATA'
@@ -107,8 +117,10 @@ function New-Case([string]$Name) {
     New-Item -Force -Path $script:case.Key | Out-Null
 }
 
+# $Env may also set Path, e.g. to a PATH that already has kurogane on it.
 function Invoke-Installer([hashtable]$Env = @{}, [string]$Mode = 'script', [string]$ScriptArgs = '', [string]$Policy = '') {
     $c = $script:case
+    $savedPath = $env:Path
     foreach ($n in $caseEnv) { [Environment]::SetEnvironmentVariable($n, $null, 'Process') }
     $env:LOCALAPPDATA = $c.AppData
     $env:DL_LOG = $c.Log
@@ -127,6 +139,24 @@ function Invoke-Installer([hashtable]$Env = @{}, [string]$Mode = 'script', [stri
             if ($ScriptArgs) { $argList += '-ScriptArgs'; $argList += $ScriptArgs }
         }
         $c.Output = (& $Shell @argList 2>&1 | Out-String)
+        $c.Code = $LASTEXITCODE
+    } finally {
+        foreach ($n in $caseEnv) { [Environment]::SetEnvironmentVariable($n, $savedEnv[$n], 'Process') }
+        $env:Path = $savedPath
+    }
+}
+
+# Runs `kurogane self uninstall` from the case's install with the case's
+# LOCALAPPDATA and registry key.
+function Invoke-Uninstall([string[]]$Arguments = @()) {
+    $c = $script:case
+    foreach ($n in $caseEnv) { [Environment]::SetEnvironmentVariable($n, $null, 'Process') }
+    $env:LOCALAPPDATA = $c.AppData
+    $env:KUROGANE_TEST_ENV_KEY = $c.Key
+    # kurogane warns on stderr, which 5.1 turns into errors under 'Stop'
+    $ErrorActionPreference = 'Continue'
+    try {
+        $c.Output = (& (Exe) self uninstall --yes @Arguments 2>&1 | ForEach-Object { "$_" } | Out-String)
         $c.Code = $LASTEXITCODE
     } finally {
         foreach ($n in $caseEnv) { [Environment]::SetEnvironmentVariable($n, $savedEnv[$n], 'Process') }
@@ -152,8 +182,11 @@ function UserPath { (Get-Item -LiteralPath $script:case.Key).GetValue('Path', ''
 function UserPathKind { (Get-Item -LiteralPath $script:case.Key).GetValueKind('Path') }
 function Leftovers { @(Get-ChildItem -Force -LiteralPath $script:case.Bin | Where-Object { $_.Name -ne 'kurogane.exe' }).Count }
 function Exe { Join-Path $script:case.Bin 'kurogane.exe' }
+function ReceiptPath { Join-Path $script:case.AppData 'kurogane\receipt.json' }
+function Receipt { [IO.File]::ReadAllText((ReceiptPath)) | ConvertFrom-Json }
+function ReceiptHasBom { $b = [IO.File]::ReadAllBytes((ReceiptPath)); $b.Length -ge 3 -and $b[0] -eq 0xEF -and $b[1] -eq 0xBB -and $b[2] -eq 0xBF }
 
-# ------------------------------------------------------------------ cases ---
+# Cases
 
 try {
     New-Case 'fresh'
@@ -167,10 +200,32 @@ try {
     Check "native artifact ($hostTriple)" { (Get-Content $case.Log) -match [regex]::Escape("$hostTriple.zip") }
     Check 'basic parsing' { -not ((Get-Content $case.Log) -match 'basic=False') }
     Check 'no leftovers' { (Leftovers) -eq 0 }
+    Check 'receipt names the binary and its PATH entry' { $r = Receipt; $r.schema -eq 1 -and $r.version -eq $LatestVersion -and $r.binary -eq (Exe) -and $r.user_path -eq $case.Bin }
+    Check 'receipt is UTF-8 without a BOM' { -not (ReceiptHasBom) }
 
     Invoke-Installer
     Check 'reinstall exit 0' { $case.Code -eq 0 -and (Has 'reinstalled') }
     Check 'PATH entry once' { (UserPath) -eq $case.Bin }
+
+    # The PATH entry is in the receipt as long as the installer added it,
+    # including after a reinstall that finds kurogane on PATH already
+    New-Case 'reinstall-on-path'
+    $custom = Join-Path $case.Dir 'tools\bin'
+    Invoke-Installer -Env @{ KUROGANE_INSTALL_DIR = $custom }
+    Invoke-Installer -Env @{ KUROGANE_INSTALL_DIR = $custom; Path = "$custom;$env:Path" }
+    Check 'the receipt keeps the PATH entry' { $case.Code -eq 0 -and (Has 'reinstalled') -and (Receipt).user_path -eq $custom }
+
+    New-Case 'user-path-already'
+    $custom = Join-Path $case.Dir 'tools\bin'
+    Set-ItemProperty -LiteralPath $case.Key -Name Path -Value "C:\a;$custom" -Type ExpandString
+    Invoke-Installer -Env @{ KUROGANE_INSTALL_DIR = $custom; Path = "$custom;$env:Path" }
+    Check 'an entry the user had is not in the receipt' { $case.Code -eq 0 -and $null -eq (Receipt).user_path -and (UserPath) -eq "C:\a;$custom" }
+
+    # An install from before receipts existed: the default directory on PATH, no receipt
+    New-Case 'default-dir-without-receipt'
+    Set-ItemProperty -LiteralPath $case.Key -Name Path -Value $case.Bin -Type ExpandString
+    Invoke-Installer -Env @{ Path = "$($case.Bin);$env:Path" }
+    Check 'the default directory counts as the installer''s' { $case.Code -eq 0 -and (Receipt).user_path -eq $case.Bin }
 
     New-Case 'path-preserved'
     Set-ItemProperty -LiteralPath $case.Key -Name Path -Value '%USERPROFILE%\tools;C:\other' -Type ExpandString
@@ -253,11 +308,13 @@ try {
     New-Case 'no-modify-path'
     Invoke-Installer -Env @{ KUROGANE_NO_MODIFY_PATH = '1' }
     Check 'PATH untouched' { $case.Code -eq 0 -and -not ((Get-Item -LiteralPath $case.Key).GetValueNames() -contains 'Path') -and (Has 'not on your user PATH') }
+    Check 'receipt has no PATH entry' { (Receipt).binary -eq (Exe) -and $null -eq (Receipt).user_path }
 
     New-Case 'custom-dir'
     $custom = Join-Path $case.Dir 'my tools\bin'
     Invoke-Installer -Env @{ KUROGANE_INSTALL_DIR = $custom }
     Check 'installed with spaces in path' { $case.Code -eq 0 -and (ExeVersion (Join-Path $custom 'kurogane.exe')) -eq "kurogane $LatestVersion" -and (UserPath) -eq $custom }
+    Check 'receipt in LOCALAPPDATA names the custom binary' { (Receipt).binary -eq (Join-Path $custom 'kurogane.exe') -and (Receipt).user_path -eq $custom }
 
     New-Case 'relative-dir'
     Invoke-Installer -Env @{ KUROGANE_INSTALL_DIR = 'rel\bin' }
@@ -292,6 +349,49 @@ try {
     New-Case 'scriptblock-args'
     Invoke-Installer -Mode scriptblock -ScriptArgs 'Version=0.0.5'
     Check 'parameters work' { $case.Code -eq 0 -and (ExeVersion (Exe)) -eq 'kurogane 0.0.5' }
+
+    # A real kurogane installed and removed again with `kurogane self
+    # uninstall`. Always --keep-data: kurogane finds its data through the
+    # Windows known folders, not LOCALAPPDATA so without it these cases
+    # would empty this machine's real %LOCALAPPDATA%\kurogane.
+    if ($Kurogane) {
+        $realVersion = (ExeVersion $Kurogane) -replace '^kurogane ', ''
+        New-Release $realVersion $hostTriple -Binary $Kurogane
+
+        New-Case 'round-trip'
+        Set-ItemProperty -LiteralPath $case.Key -Name Path -Value '%USERPROFILE%\tools;C:\other' -Type ExpandString
+        Invoke-Installer -Env @{ KUROGANE_VERSION = $realVersion }
+        Check 'installed' { $case.Code -eq 0 -and (Test-Path -LiteralPath (Exe)) }
+        Invoke-Installer -Env @{ KUROGANE_VERSION = $realVersion; Path = "$($case.Bin);$env:Path" }
+        Check 'reinstalled from a terminal with kurogane on PATH' { $case.Code -eq 0 -and (Has 'reinstalled') }
+        Invoke-Uninstall @('--keep-data')
+        Check 'uninstalled' { $case.Code -eq 0 -and (Has 'Kurogane uninstalled') }
+        Check 'binary, receipt and folders gone' { -not (Test-Path -LiteralPath (Join-Path $case.AppData 'kurogane')) }
+        Check 'user PATH as before, %VARS% unexpanded' { (UserPath) -eq '%USERPROFILE%\tools;C:\other' -and (UserPathKind) -eq 'ExpandString' }
+
+        New-Case 'round-trip-only-entry'
+        Invoke-Installer -Env @{ KUROGANE_VERSION = $realVersion }
+        Invoke-Uninstall @('--keep-data')
+        Check 'a user PATH the installer created is gone again' { $case.Code -eq 0 -and -not ((Get-Item -LiteralPath $case.Key).GetValueNames() -contains 'Path') }
+
+        New-Case 'round-trip-custom-dir'
+        $custom = Join-Path $case.Dir 'my tools\bin'
+        New-Item -ItemType Directory -Force -Path $custom | Out-Null
+        Set-Content -LiteralPath (Join-Path $custom 'other.txt') -Value 'not the installer''s'
+        Invoke-Installer -Env @{ KUROGANE_VERSION = $realVersion; KUROGANE_INSTALL_DIR = $custom }
+        $case.Bin = $custom
+        Invoke-Uninstall @('--keep-data')
+        Check 'binary gone, the folder and its other files stay' { $case.Code -eq 0 -and -not (Test-Path -LiteralPath (Exe)) -and (Test-Path -LiteralPath (Join-Path $custom 'other.txt')) }
+        Check 'its PATH entry and the receipt are gone' { -not ((Get-Item -LiteralPath $case.Key).GetValueNames() -contains 'Path') -and -not (Test-Path -LiteralPath (ReceiptPath)) }
+
+        New-Case 'round-trip-not-installed'
+        $copy = Join-Path $case.Dir 'elsewhere\kurogane.exe'
+        New-Item -ItemType Directory -Force -Path (Split-Path $copy) | Out-Null
+        Copy-Item -LiteralPath $Kurogane -Destination $copy
+        $case.Bin = Split-Path $copy
+        Invoke-Uninstall @('--keep-data')
+        Check 'a binary no receipt names stays' { $case.Code -eq 0 -and (Has 'Not installed by the Kurogane installer') -and (Test-Path -LiteralPath $copy) }
+    }
 } finally {
     Remove-Item -LiteralPath $regRoot -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue

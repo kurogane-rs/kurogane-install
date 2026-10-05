@@ -4,7 +4,9 @@
 #
 # Installs the prebuilt `kurogane` CLI into `%LOCALAPPDATA%\kurogane\bin` and
 # adds it to the user PATH. Required dependencies are handled later by
-# `kurogane`. Works with both Windows PowerShell 5.1 and PowerShell 7.
+# `kurogane`. What it installed is recorded in
+# `%LOCALAPPDATA%\kurogane\receipt.json`, which `kurogane self uninstall`
+# reads. Works with both Windows PowerShell 5.1 and PowerShell 7.
 #
 # `irm | iex` cannot pass arguments, so options come from the environment:
 #   KUROGANE_VERSION         install a specific version (default: latest)
@@ -156,6 +158,11 @@ function Install-Kurogane {
             Write-Step 'Configured' "user PATH to include $InstallDir"
         }
     }
+    try {
+        Write-Receipt -Dest $dest -Version $newVersion -InstallDir $InstallDir -AddedToPath ($pathNote -eq 'configured')
+    } catch {
+        Write-Warn "cannot write the install receipt ($($_.Exception.Message)); 'kurogane self uninstall' will not recognise this install"
+    }
     if ($env:GITHUB_PATH) { Add-Content -LiteralPath $env:GITHUB_PATH -Value $InstallDir }
 
     Write-Host ''
@@ -260,8 +267,7 @@ function Test-PathEntry([string]$PathValue, [string]$Dir) {
 # and unexpanded %VARIABLES% in existing entries, then tells running programs
 # (Explorer, new terminals) that the environment changed.
 function Add-UserPath([string]$Dir) {
-    $keyPath = 'HKCU:\Environment'
-    if ($env:KUROGANE_TEST_ENV_KEY) { $keyPath = $env:KUROGANE_TEST_ENV_KEY }
+    $keyPath = Get-EnvironmentKeyPath
     $key = Get-Item -LiteralPath $keyPath
     $kind = 'ExpandString'
     $current = ''
@@ -283,6 +289,55 @@ function Add-UserPath([string]$Dir) {
         [Environment]::SetEnvironmentVariable($dummy, $null, 'User')
     }
     return $true
+}
+
+# The registry key that holds the user PATH; tests point it at a throwaway key.
+function Get-EnvironmentKeyPath {
+    if ($env:KUROGANE_TEST_ENV_KEY) { return $env:KUROGANE_TEST_ENV_KEY }
+    return 'HKCU:\Environment'
+}
+
+# Records where this install put things in %LOCALAPPDATA%\kurogane\receipt.json,
+# for `kurogane self uninstall`. The user PATH entry counts as the installer's
+# when this run added it, when the previous receipt said so, or when it is the
+# default directory (an install from before receipts existed); an entry the
+# user had already is left out, so uninstalling never removes it.
+function Write-Receipt([string]$Dest, [string]$Version, [string]$InstallDir, [bool]$AddedToPath) {
+    if (-not $env:LOCALAPPDATA) { throw 'LOCALAPPDATA is not set' }
+    $kuroganeHome = Join-Path $env:LOCALAPPDATA 'kurogane'
+    $receipt = Join-Path $kuroganeHome 'receipt.json'
+
+    $owned = $AddedToPath
+    if (-not $owned) {
+        $previous = $null
+        if (Test-Path -LiteralPath $receipt -PathType Leaf) {
+            # Not Get-Content: Windows PowerShell 5.1 reads BOM-less UTF-8 as ANSI
+            try { $previous = [IO.File]::ReadAllText($receipt) | ConvertFrom-Json } catch { $previous = $null }
+        }
+        $owned = ($previous -and $previous.user_path -and $previous.user_path.TrimEnd('\') -ieq $InstallDir) -or
+            ($InstallDir -ieq (Join-Path $kuroganeHome 'bin'))
+    }
+    $userPath = $null
+    if ($owned) {
+        $key = Get-Item -LiteralPath (Get-EnvironmentKeyPath)
+        if (Test-PathEntry $key.GetValue('Path', '', 'DoNotExpandEnvironmentNames') $InstallDir) { $userPath = $InstallDir }
+    }
+
+    $json = [ordered]@{
+        schema = 1
+        version = $Version
+        binary = $Dest
+        user_path = $userPath
+    } | ConvertTo-Json
+    New-Item -ItemType Directory -Force -Path $kuroganeHome | Out-Null
+    $staged = "$receipt.$PID"
+    try {
+        # UTF-8 without a BOM, which JSON readers reject
+        [IO.File]::WriteAllText($staged, $json, (New-Object Text.UTF8Encoding $false))
+        Move-Item -LiteralPath $staged -Destination $receipt -Force
+    } finally {
+        Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue
+    }
 }
 
 # Output goes through Write-Host -ForegroundColor rather than ANSI escapes:

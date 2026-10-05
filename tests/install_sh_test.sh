@@ -3,6 +3,11 @@
 #
 #   sh tests/install_sh_test.sh            # run the installer under sh
 #   TEST_SHELL=dash sh tests/install_sh_test.sh
+#   KUROGANE_BIN=/path/to/kurogane sh tests/install_sh_test.sh
+#
+# With KUROGANE_BIN set to a real kurogane CLI, the round-trip cases also
+# install it and remove it again with `kurogane self uninstall` (Linux only:
+# they check the XDG data and cache folders).
 #
 # Every case runs the real installer with `env -i` and a PATH made only of
 # stubs (curl, wget, uname, sysctl, ...) and wrappers around the real tools the
@@ -27,16 +32,29 @@ PASS=0
 FAIL=0
 FAILED=""
 
-# ---------------------------------------------------------------- fixtures --
+# Fixtures
 
 # make_release <version> <triple> [binary-body]
 make_release() {
+    _stage="$WORK/stage/$1/$2/kurogane-cli-$2"
+    mkdir -p "$_stage"
+    printf '#!/bin/sh\n%s\n' "${3:-echo \"kurogane $1\"}" >"$_stage/kurogane"
+    pack_release "$1" "$2"
+}
+
+# make_real_release <version> <triple> <binary>: a release of a real binary
+make_real_release() {
+    _stage="$WORK/stage/$1/$2/kurogane-cli-$2"
+    mkdir -p "$_stage"
+    cp "$3" "$_stage/kurogane"
+    pack_release "$1" "$2"
+}
+
+# pack_release <version> <triple>: archives the staged binary with its checksum
+pack_release() {
     _v="$1"
     _t="$2"
-    _stage="$WORK/stage/$_v/$_t/kurogane-cli-$_t"
-    mkdir -p "$_stage"
-    printf '#!/bin/sh\n%s\n' "${3:-echo \"kurogane $_v\"}" >"$_stage/kurogane"
-    chmod 755 "$_stage/kurogane"
+    chmod 755 "$WORK/stage/$_v/$_t/kurogane-cli-$_t/kurogane"
     _out="$FIX/releases/download/v$_v"
     mkdir -p "$_out"
     (cd "$WORK/stage/$_v/$_t" && tar -czf "$_out/kurogane-cli-$_t.tar.gz" "kurogane-cli-$_t")
@@ -71,7 +89,7 @@ make_release 0.0.8 x86_64-unknown-linux-musl 'exit 126'
 # 0.0.9: the tag says 0.0.9 but the binary reports something else.
 make_release 0.0.9 x86_64-unknown-linux-musl 'echo "kurogane 1.2.3"'
 
-# ------------------------------------------------------------------ stubs ---
+# Stubs
 
 TOOLS="$WORK/tools"
 STUBS="$WORK/stubs"
@@ -165,7 +183,7 @@ for f in "$TOOLS"/*; do
     case "$(basename "$f")" in sha256sum | shasum | openssl) ;; *) cp "$f" "$NOSHA/" ;; esac
 done
 
-# ----------------------------------------------------------------- runner ---
+# Runner
 
 # new_case: fresh HOME and temp dir; sets CASE, H, OUT
 new_case() {
@@ -212,9 +230,11 @@ has() { grep -qF -- "$1" "$OUT"; }
 count() { grep -cxF -- "$2" "$1" 2>/dev/null || true; }
 BIN() { echo "$H/.kurogane/bin/kurogane"; }
 SRC_LINE() { echo ". \"$H/.kurogane/env\""; }
+RECEIPT() { echo "$H/.kurogane/receipt.json"; }
+in_receipt() { grep -qF -- "$1" "$(RECEIPT)"; }
 tmp_empty() { [ -z "$(ls -A "$CASE/tmp")" ]; }
 
-# ------------------------------------------------------------------ cases ---
+# Cases
 
 new_case fresh
 run_installer --
@@ -230,6 +250,13 @@ check fresh 'tmp_empty'
 check fresh 'grep -q "x86_64-unknown-linux-musl.tar.gz" "$CASE/dl.log"'
 check fresh 'grep -q -- "--tlsv1.2" "$CASE/dl.log"'
 check fresh '[ -z "$(ls -A "$H/.kurogane/bin" | grep -v "^kurogane$")" ]'
+check fresh-receipt 'in_receipt "\"schema\": 1," && in_receipt "\"version\": \"$LATEST\","'
+check fresh-receipt 'in_receipt "\"binary\": \"$(BIN)\"," && in_receipt "\"env\": \"$H/.kurogane/env\","'
+check fresh-receipt 'in_receipt "\"$H/.profile\"," && in_receipt "\"$H/.zshenv\""'
+check fresh-receipt 'in_receipt "\"fish\": \"$H/.config/fish/conf.d/kurogane.fish\""'
+if command -v python3 >/dev/null 2>&1; then
+    check fresh-receipt 'python3 -c "import json, sys; json.load(open(sys.argv[1]))" "$(RECEIPT)"'
+fi
 
 # The generated env script really puts kurogane on PATH. (Not `command -v`:
 # ksh93 quotes paths with spaces, see find_cmd in install.sh.)
@@ -246,6 +273,10 @@ check reinstall '[ "$(count "$H/.bashrc" "$(SRC_LINE)")" = 1 ]'
 check reinstall '[ "$(count "$H/.bashrc" "export FOO=1")" = 1 ]'
 run_installer --
 check reinstall-twice '[ "$(count "$H/.bashrc" "$(SRC_LINE)")" = 1 ]'
+# From a shell that has kurogane on PATH already, the PATH setup is skipped,
+# but the receipt still lists the files it touched
+run_installer "PATH=$H/.kurogane/bin:$STUBS:$TOOLS" --
+check reinstall-on-path '[ $RC -eq 0 ] && has reinstalled && in_receipt "\"$H/.bashrc\","'
 
 new_case upgrade
 run_installer -- --version 0.0.5
@@ -343,6 +374,7 @@ check http-refused '[ $RC -ne 0 ] && has "must be an https:// URL"'
 new_case no-modify-path
 run_installer -- --no-modify-path
 check no-modify-path '[ $RC -eq 0 ] && [ ! -e "$H/.profile" ] && has "is not on PATH"'
+check no-modify-path 'in_receipt "\"binary\": \"$(BIN)\","'
 new_case no-modify-path-env
 run_installer KUROGANE_NO_MODIFY_PATH=1 --
 check no-modify-path-env '[ $RC -eq 0 ] && [ ! -e "$H/.profile" ]'
@@ -356,6 +388,7 @@ run_installer -- --install-dir "$H/my tools/bin"
 check custom-dir '[ $RC -eq 0 ] && [ -x "$H/my tools/bin/kurogane" ]'
 check custom-dir 'grep -qF "$H/my tools/bin" "$H/.kurogane/env"'
 check custom-dir '[ "$(env -i HOME="$H" PATH=/usr/bin:/bin "$TEST_SHELL_PATH" -c ". \"$H/.kurogane/env\"; kurogane --version")" = "kurogane $LATEST" ]'
+check custom-dir 'in_receipt "\"binary\": \"$H/my tools/bin/kurogane\","'
 
 # Another kurogane earlier on PATH is reported; the fresh install itself never is.
 new_case shadowed
@@ -379,6 +412,10 @@ run_installer -- --install-dir '/tmp/a\b'
 check unsafe-dir-backslash '[ $RC -ne 0 ] && has "unsupported characters"'
 run_installer -- --install-dir '/tmp/a"b'
 check unsafe-dir-quote '[ $RC -ne 0 ] && has "unsupported characters"'
+# The fish folder ends up in the receipt's JSON too
+new_case unsafe-config-home
+run_installer 'XDG_CONFIG_HOME=/tmp/a"b' --
+check unsafe-config-home '[ $RC -ne 0 ] && has "unsupported characters" && [ ! -s "$CASE/dl.log" ]'
 
 new_case zsh-fish
 printf '#!/bin/sh\n' >"$CASE/zsh"
@@ -388,6 +425,7 @@ run_installer "PATH=$CASE:$STUBS:$TOOLS" --
 check zsh-fish '[ $RC -eq 0 ] && [ "$(count "$H/.zshenv" "$(SRC_LINE)")" = 1 ]'
 check zsh-fish 'grep -qF "set -gx PATH \"$H/.kurogane/bin\"" "$H/.config/fish/conf.d/kurogane.fish"'
 check zsh-fish '[ ! -e "$H/.bashrc" ]'
+check zsh-fish 'in_receipt "\"$H/.zshenv\"" && in_receipt "\"$H/.config/fish/conf.d/kurogane.fish\""'
 
 new_case github-path
 : >"$CASE/github_path"
@@ -438,7 +476,64 @@ env -i HOME="$H" TMPDIR="$CASE/tmp" PATH="$STUBS:$TOOLS" DL_LOG="$CASE/dl.log" \
     "$TEST_SHELL_PATH" "$CASE/partial.sh" </dev/null >"$OUT" 2>&1
 check truncated-script '[ ! -s "$CASE/dl.log" ] && [ ! -e "$H/.kurogane" ]'
 
-# ----------------------------------------------------------------- report ---
+# run_uninstall <binary> [args]: runs `<binary> self uninstall --yes` the way
+# a new login shell would find it. Sets RC.
+run_uninstall() {
+    _exe="$1"
+    shift
+    env -i HOME="$H" PATH="$STUBS:$TOOLS" "$_exe" self uninstall --yes "$@" </dev/null >"$OUT" 2>&1
+    RC=$?
+}
+
+if [ -n "${KUROGANE_BIN:-}" ] && [ "$(uname -s)" = Linux ]; then
+    REAL="$("$KUROGANE_BIN" --version)"
+    REAL="${REAL#kurogane }"
+    make_real_release "$REAL" x86_64-unknown-linux-musl "$KUROGANE_BIN"
+
+    new_case round-trip
+    printf 'export FOO=1' >"$H/.bashrc" # no trailing newline: the installer adds one
+    printf '#!/bin/sh\n' >"$CASE/zsh"
+    chmod 755 "$CASE/zsh"
+    # Kurogane's data that uninstalling removes, and a profile it keeps
+    mkdir -p "$H/.config/fish" "$H/.local/share/kurogane/cef/1.0" \
+        "$H/.cache/kurogane/templates/t" "$H/.local/share/kurogane/profiles/app"
+    run_installer "PATH=$CASE:$STUBS:$TOOLS" -- --version "$REAL"
+    check round-trip-install '[ $RC -eq 0 ] && [ "$(count "$H/.bashrc" "$(SRC_LINE)")" = 1 ]'
+    run_installer "PATH=$H/.kurogane/bin:$CASE:$STUBS:$TOOLS" -- --version "$REAL"
+    check round-trip-reinstall '[ $RC -eq 0 ] && has reinstalled'
+    run_uninstall "$(BIN)"
+    check round-trip '[ $RC -eq 0 ] && has "Kurogane uninstalled"'
+    check round-trip '[ ! -e "$H/.kurogane" ]'
+    check round-trip '[ ! -e "$H/.config/fish/conf.d/kurogane.fish" ]'
+    check round-trip '[ "$(cat "$H/.bashrc")" = "export FOO=1" ]'
+    # Startup files stay, emptied, even the ones the installer created
+    check round-trip '[ -f "$H/.profile" ] && [ ! -s "$H/.profile" ] && [ -f "$H/.zshenv" ] && [ ! -s "$H/.zshenv" ]'
+    check round-trip '[ ! -e "$H/.local/share/kurogane/cef" ] && [ ! -e "$H/.cache/kurogane" ]'
+    check round-trip '[ -d "$H/.local/share/kurogane/profiles/app" ] && has "Application profiles stay"'
+
+    new_case round-trip-keep-data
+    mkdir -p "$H/.local/share/kurogane/cef/1.0"
+    run_installer -- --version "$REAL"
+    run_uninstall "$(BIN)" --keep-data
+    check round-trip-keep-data '[ $RC -eq 0 ] && [ ! -e "$H/.kurogane" ] && [ -d "$H/.local/share/kurogane/cef/1.0" ]'
+    check round-trip-keep-data '! grep -qF ".kurogane" "$H/.profile"'
+
+    new_case round-trip-custom-dir
+    mkdir -p "$H/my tools/bin"
+    printf 'mine\n' >"$H/my tools/bin/other"
+    run_installer -- --version "$REAL" --install-dir "$H/my tools/bin"
+    run_uninstall "$H/my tools/bin/kurogane" --keep-data
+    check round-trip-custom-dir '[ $RC -eq 0 ] && [ ! -e "$H/my tools/bin/kurogane" ] && [ -f "$H/my tools/bin/other" ]'
+    check round-trip-custom-dir '[ ! -e "$H/.kurogane" ] && ! grep -qF ".kurogane" "$H/.profile"'
+
+    new_case round-trip-not-installed
+    mkdir -p "$H/elsewhere"
+    cp "$KUROGANE_BIN" "$H/elsewhere/kurogane"
+    run_uninstall "$H/elsewhere/kurogane" --keep-data
+    check round-trip-not-installed '[ $RC -eq 0 ] && has "Not installed by the Kurogane installer" && [ -x "$H/elsewhere/kurogane" ]'
+elif [ -n "${KUROGANE_BIN:-}" ]; then
+    echo "round trip skipped: it checks Linux's XDG folders" >&2
+fi
 
 echo "install.sh under $TEST_SHELL_PATH: $PASS passed, $FAIL failed"
 if [ $FAIL -ne 0 ]; then

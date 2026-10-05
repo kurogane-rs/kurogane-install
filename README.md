@@ -34,6 +34,14 @@ powershell -c "irm https://kurogane-rs.org/install.ps1|iex"
 
 Stable releases become the latest release automatically.
 
+### Uninstalling
+
+```bash
+kurogane self uninstall
+```
+
+Every install writes a receipt, `~/.kurogane/receipt.json` (or `$KUROGANE_HOME/receipt.json`) on Linux and macOS and `%LOCALAPPDATA%\kurogane\receipt.json` on Windows. It records the binary and the files and PATH entry the installer manages. The CLI reads it to know what is the installer's to remove, so its format is a contract between this repository and the CLI: `"schema": 1`, raised only for a change an older CLI would misread.
+
 ### Local tests
 
 **Shell**
@@ -46,4 +54,14 @@ TEST_SHELL=dash sh tests/install_sh_test.sh
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tests\install_ps1_test.ps1
+```
+
+**Round trip with a real CLI** (install it, then `kurogane self uninstall`; the shell version runs on Linux only)
+
+```sh
+KUROGANE_BIN=/path/to/kurogane sh tests/install_sh_test.sh
+```
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tests\install_ps1_test.ps1 -Kurogane C:\path\to\kurogane.exe
 ```

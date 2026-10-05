@@ -7,6 +7,9 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  # Run nightly to catch Kurogane changes that break the receipt contract
+  schedule:
+    - cron: '17 3 * * *'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -105,3 +108,40 @@ jobs:
       - name: install.ps1 tests
         shell: powershell
         run: .\tests\install_ps1_test.ps1 -Shell ${{ matrix.shell }}
+
+  contract:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, windows-2022]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/checkout@v6
+        with:
+          repository: 0x48piraj/kurogane
+          ref: master
+          path: kurogane
+          persist-credentials: false
+
+      - name: Build kurogane
+        shell: bash
+        working-directory: kurogane
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            sudo apt-get update -q
+            sudo apt-get install -y --no-install-recommends libssl-dev pkg-config
+          fi
+          # Installs the toolchain from rust-toolchain.toml.
+          rustup toolchain install
+          cargo build -p kurogane-cli --locked
+
+      - name: Round trip (install.sh)
+        if: runner.os == 'Linux'
+        run: KUROGANE_BIN="$PWD/kurogane/target/debug/kurogane" TEST_SHELL=dash sh tests/install_sh_test.sh
+
+      - name: Round trip (install.ps1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: .\tests\install_ps1_test.ps1 -Kurogane "$PWD\kurogane\target\debug\kurogane.exe"
