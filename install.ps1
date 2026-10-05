@@ -33,8 +33,11 @@ function Install-Kurogane {
     )
 
     $ErrorActionPreference = 'Stop'
-    # The progress bar makes Invoke-WebRequest many times slower on 5.1.
-    $ProgressPreference = 'SilentlyContinue'
+    # The progress bar makes Invoke-WebRequest many times slower on 5.1;
+    # PowerShell 7 draws it cheaply, so keep it there for a person watching.
+    if ($PSVersionTable.PSVersion.Major -lt 7 -or -not (Test-Interactive)) {
+        $ProgressPreference = 'SilentlyContinue'
+    }
 
     $repoUrl = 'https://github.com/0x48piraj/kurogane'
     $package = 'kurogane-cli'
@@ -61,12 +64,13 @@ function Install-Kurogane {
         throw "KUROGANE_DOWNLOAD_URL must be an https:// URL: $DownloadUrl"
     }
     $DownloadUrl = $DownloadUrl.TrimEnd('/')
+    Write-Banner
     if ($Version -eq 'latest') {
         $releaseUrl = "$DownloadUrl/latest/download"
-        Write-Step "downloading the latest Kurogane for $target"
+        Write-Step 'Downloading' "the latest Kurogane for $target"
     } else {
         $releaseUrl = "$DownloadUrl/download/v$Version"
-        Write-Step "downloading Kurogane $Version for $target"
+        Write-Step 'Downloading' "Kurogane $Version for $target"
     }
     $archive = "$package-$target.zip"
 
@@ -96,7 +100,7 @@ function Install-Kurogane {
         if ($actual -ne $expected) {
             throw "checksum mismatch for $archive`n  expected $expected`n  got      $actual`n  The download is corrupt or was tampered with; nothing was installed."
         }
-        Write-Step "verified sha256 $actual"
+        Write-Step 'Verified' "sha256 $actual"
 
         $extracted = Join-Path $tmp 'x'
         try {
@@ -135,6 +139,7 @@ function Install-Kurogane {
         $oldVersion = $null
         if (Test-Path -LiteralPath $dest -PathType Leaf) { $oldVersion = Get-KuroganeVersion $dest }
 
+        Write-Step 'Installing' $dest
         Install-Binary $new $dest
     } finally {
         Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
@@ -148,19 +153,20 @@ function Install-Kurogane {
             $pathNote = 'skipped'
         } elseif (Add-UserPath $InstallDir) {
             $pathNote = 'configured'
+            Write-Step 'Configured' "user PATH to include $InstallDir"
         }
     }
     if ($env:GITHUB_PATH) { Add-Content -LiteralPath $env:GITHUB_PATH -Value $InstallDir }
 
     Write-Host ''
     if (-not $oldVersion) {
-        Write-Host "Kurogane $newVersion installed" -ForegroundColor Green -NoNewline
+        Write-Styled "Kurogane $newVersion installed" Green -NoNewline
         Write-Host " to $dest"
     } elseif ($oldVersion -eq $newVersion) {
-        Write-Host "Kurogane $newVersion reinstalled" -ForegroundColor Green -NoNewline
+        Write-Styled "Kurogane $newVersion reinstalled" Green -NoNewline
         Write-Host " at $dest"
     } else {
-        Write-Host 'Kurogane updated' -ForegroundColor Green -NoNewline
+        Write-Styled 'Kurogane updated' Green -NoNewline
         Write-Host " $oldVersion -> $newVersion at $dest"
     }
 
@@ -169,19 +175,22 @@ function Install-Kurogane {
         Write-Warn "'$($first.Source)' comes earlier on PATH and shadows this install;`n  remove it (e.g. 'cargo uninstall kurogane-cli') or reorder PATH"
     }
     if ($pathNote -eq 'configured') {
-        Write-Host "Added $InstallDir to your user PATH (new terminals pick it up)."
+        Write-Styled '(kurogane works in this window now; new terminals pick it up automatically)' DarkGray
     } elseif ($pathNote -eq 'skipped') {
+        Write-Host ''
         Write-Host "$InstallDir is not on your user PATH; add it to use kurogane in new terminals."
     }
     if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
         Write-Host ''
-        Write-Host "Kurogane builds apps with Rust; 'kurogane doctor' shows what else your machine needs."
+        Write-Host "Kurogane builds apps with Rust; '" -NoNewline
+        Write-Styled 'kurogane doctor' Cyan -NoNewline
+        Write-Host "' shows what else your machine needs."
     }
     Write-Host ''
     Write-Host 'Create your first app:'
-    Write-Host '    kurogane new my-app'
-    Write-Host '    cd my-app'
-    Write-Host '    kurogane dev'
+    Write-Styled '    kurogane new my-app' Cyan
+    Write-Styled '    cd my-app' Cyan
+    Write-Styled '    kurogane dev' Cyan
 }
 
 # Native machine architecture, not the architecture of this PowerShell
@@ -276,18 +285,54 @@ function Add-UserPath([string]$Dir) {
     return $true
 }
 
-function Write-Step([string]$Message) {
-    Write-Host "kurogane-install: $Message"
+# Output goes through Write-Host -ForegroundColor rather than ANSI escapes:
+# it works in every host (conhost, Windows Terminal, ISE, VS Code) on both
+# 5.1 and 7, and never leaks escape codes into redirected output. NO_COLOR
+# (https://no-color.org) turns colors off.
+function Write-Styled([string]$Text, [ConsoleColor]$Color, [switch]$NoNewline) {
+    if ($env:NO_COLOR) {
+        Write-Host $Text -NoNewline:$NoNewline
+    } else {
+        Write-Host $Text -ForegroundColor $Color -NoNewline:$NoNewline
+    }
+}
+
+# True when a person is watching the console rather than a pipe or a log.
+function Test-Interactive {
+    try { return -not [Console]::IsOutputRedirected } catch { return $false }
+}
+
+function Write-Banner {
+    if (-not (Test-Interactive)) { return }
+    $logo = @'
+
+   _
+  | |__ _  _  _ _  ___  __ _  __ _  _ _   ___
+  | / /| || || '_|/ _ \/ _` |/ _` || ' \ / -_)
+  |_\_\ \_,_||_|  \___/\__, |\__,_||_||_|\___|
+                       |___/
+'@
+    Write-Host $logo
+    Write-Styled '  Kurogane installer - https://kurogane-rs.org' DarkGray
+    Write-Host ''
+}
+
+# A cargo-style status line with the verb right-aligned.
+function Write-Step([string]$Verb, [string]$Message) {
+    Write-Styled ('{0,12}' -f $Verb) Green -NoNewline
+    Write-Host " $Message"
 }
 
 function Write-Warn([string]$Message) {
-    Write-Host "kurogane-install: warning: $Message" -ForegroundColor Yellow
+    Write-Styled 'warning:' Yellow -NoNewline
+    Write-Host " $Message"
 }
 
 try {
     Install-Kurogane -Version $Version -InstallDir $InstallDir -NoModifyPath ($NoModifyPath -or ($env:KUROGANE_NO_MODIFY_PATH -and $env:KUROGANE_NO_MODIFY_PATH -notin @('0', 'false'))) -Arch $Arch -DownloadUrl $DownloadUrl
 } catch {
-    Write-Host "kurogane-install: error: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Styled 'error:' Red -NoNewline
+    Write-Host " $($_.Exception.Message)"
     # Never `exit`: under `irm | iex` that would close the user's window.
     throw 'Kurogane was not installed.'
 }

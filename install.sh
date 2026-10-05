@@ -51,6 +51,7 @@ EOF
 }
 
 main() {
+    setup_style
     _version="${KUROGANE_VERSION:-latest}"
     _home="${KUROGANE_HOME:-${HOME:-}/.kurogane}"
     _bin_dir="${KUROGANE_INSTALL_DIR:-}"
@@ -136,12 +137,13 @@ main() {
     trap 'exit 130' INT
     trap 'exit 143' TERM
 
+    banner
     if [ "$_version" = latest ]; then
-        say "downloading the latest Kurogane for $_target"
+        step Downloading "the latest Kurogane for $_target"
     else
-        say "downloading Kurogane $_version for $_target"
+        step Downloading "Kurogane $_version for $_target"
     fi
-    download "$_release_url/$_archive" "$_tmp/$_archive" ||
+    download "$_release_url/$_archive" "$_tmp/$_archive" progress ||
         die "download failed: $_release_url/$_archive
   (is '$_version' a published version? releases: $KUROGANE_REPO_URL/releases)"
     download "$_release_url/$_archive.sha256" "$_tmp/$_archive.sha256" ||
@@ -180,6 +182,7 @@ main() {
         _old_version="${_old_version#kurogane }"
     fi
 
+    step Installing "$_dest"
     mkdir -p "$_bin_dir" || die "cannot create $_bin_dir"
     _staged="$_bin_dir/.kurogane.new.$$"
     if ! cp "$_new" "$_staged" || ! chmod 755 "$_staged"; then
@@ -217,11 +220,11 @@ cleanup() {
 summary() {
     printf '\n' >&2
     if [ -z "$_old_version" ]; then
-        printf '%s\n' "$(bold "Kurogane $_new_version installed") to $_dest" >&2
+        printf '%s\n' "$_green${_bold}Kurogane $_new_version installed$_reset to $_dest" >&2
     elif [ "$_old_version" = "$_new_version" ]; then
-        printf '%s\n' "$(bold "Kurogane $_new_version reinstalled") at $_dest" >&2
+        printf '%s\n' "$_green${_bold}Kurogane $_new_version reinstalled$_reset at $_dest" >&2
     else
-        printf '%s\n' "$(bold "Kurogane updated") $_old_version -> $_new_version at $_dest" >&2
+        printf '%s\n' "$_green${_bold}Kurogane updated$_reset $_old_version -> $_new_version at $_dest" >&2
     fi
 
     _shadow="$(find_cmd kurogane || true)"
@@ -232,19 +235,38 @@ summary() {
 
     case "$_path_note" in
         configured)
-            printf '\n%s\n    . "%s/env"\n' "To use kurogane in this shell, run:" "$_home" >&2
-            printf '%s\n' "(new shells pick it up automatically)" >&2
+            printf '\n%s\n' "To use kurogane in this shell, run:" >&2
+            cmd ". \"$_home/env\""
+            printf '%s\n' "$_dim(new shells pick it up automatically)$_reset" >&2
             ;;
         skipped)
-            printf '\n%s\n    %s\n' "$_bin_dir is not on PATH. Add it yourself, e.g.:" "export PATH=\"$_bin_dir:\$PATH\"" >&2
+            printf '\n%s\n' "$_bin_dir is not on PATH. Add it yourself, e.g.:" >&2
+            cmd "export PATH=\"$_bin_dir:\$PATH\""
             ;;
     esac
 
     if ! command -v cargo >/dev/null 2>&1 && [ ! -x "${CARGO_HOME:-${HOME:-}/.cargo}/bin/cargo" ]; then
-        printf '\n%s\n' "Kurogane builds apps with Rust; 'kurogane doctor' shows what else your machine needs." >&2
+        printf '\n%s\n' "Kurogane builds apps with Rust; '$_cyan${_bold}kurogane doctor$_reset' shows what else your machine needs." >&2
     fi
 
-    printf '\n%s\n    %s\n    %s\n    %s\n' "Create your first app:" "kurogane new my-app" "cd my-app" "kurogane dev" >&2
+    printf '\n%s\n' "Create your first app:" >&2
+    cmd "kurogane new my-app"
+    cmd "cd my-app"
+    cmd "kurogane dev"
+}
+
+# Prints the ASCII logo, only for a person watching a terminal.
+banner() {
+    { [ "${_quiet:-no}" = no ] && [ -t 2 ]; } || return 0
+    printf '\n%s' "$_bold" >&2
+    cat >&2 <<'EOF'
+   _
+  | |__ _  _  _ _  ___  __ _  __ _  _ _   ___
+  | / /| || || '_|/ _ \/ _` |/ _` || ' \ / -_)
+  |_\_\ \_,_||_|  \___/\__, |\__,_||_||_|\___|
+                       |___/
+EOF
+    printf '%s  %s\n\n' "$_reset" "${_dim}Kurogane installer - https://kurogane-rs.org$_reset" >&2
 }
 
 # Sets RETVAL to the release target triple for this machine, or explains why
@@ -295,7 +317,7 @@ detect_target() {
 
     if [ "$_os" = Linux ]; then
         if [ "$_force_generic" = no ] && has_nix; then
-            say "Nix detected: '$KUROGANE_FLAKE' is also available as a Nix package"
+            note "Nix detected: '$KUROGANE_FLAKE' is also available as a Nix package"
         fi
         if ldd --version 2>&1 | grep -q musl; then
             warn "this system uses musl libc; the kurogane CLI runs, but the Chromium runtime it
@@ -316,16 +338,21 @@ has_nix() {
     command -v nix >/dev/null 2>&1 || [ -d "${KUROGANE_TEST_SYSROOT:-}/nix/store" ]
 }
 
-# download <url> <file>: HTTPS-only, TLS 1.2+, follows redirects, fails on
-# HTTP errors. The destination is only ever inside the private temp dir.
+# download <url> <file> [progress]: HTTPS-only, TLS 1.2+, follows redirects,
+# fails on HTTP errors. The destination is only ever inside the private temp
+# dir. With `progress`, curl draws its progress bar when stderr is a terminal.
 download() {
     # Snap-confined curl cannot write to the temp dir; prefer wget then.
     _curl="$(command -v curl 2>/dev/null || true)"
     case "$_curl" in
         */snap/*) check_cmd wget && _curl="" ;;
     esac
+    _progress=--silent
+    if [ "${3:-}" = progress ] && [ "${_quiet:-no}" = no ] && [ -t 2 ]; then
+        _progress=--progress-bar
+    fi
     if [ -n "$_curl" ]; then
-        curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
+        curl --proto '=https' --tlsv1.2 --fail "$_progress" --show-error --location \
             --retry 3 --output "$2" "$1"
     elif check_cmd wget; then
         if wget --help 2>&1 | grep -q -- '--https-only'; then
@@ -364,7 +391,7 @@ verify_sha256() {
   The download is corrupt or was tampered with; nothing was installed."
         return 1
     fi
-    say "verified sha256 $_actual"
+    step Verified "sha256 $_actual"
 }
 
 on_path() {
@@ -418,7 +445,7 @@ add_line() {
         printf '\n' >>"$1"
     fi
     printf '%s\n' "$2" >>"$1"
-    say "added kurogane to PATH in $1"
+    step Configured "PATH in $1"
 }
 
 # Paths end up inside generated shell code, so refuse characters that would
@@ -431,24 +458,51 @@ check_safe_path() {
     esac
 }
 
-bold() {
-    if [ -t 2 ] && [ -z "${NO_COLOR:-}" ]; then
-        printf '\033[1m%s\033[0m' "$1"
-    else
-        printf '%s' "$1"
+# Sets the color variables. Colors follow the common conventions: NO_COLOR
+# (https://no-color.org) turns them off, FORCE_COLOR or CLICOLOR_FORCE turns
+# them on, and otherwise they are used only when stderr is a terminal that is
+# not TERM=dumb. Only the basic SGR codes are used, which every terminal
+# emulator and the Windows console (via Git Bash, WSL) understand.
+setup_style() {
+    _reset="" _bold="" _dim="" _red="" _green="" _yellow="" _cyan=""
+    if [ -n "${NO_COLOR:-}" ]; then
+        return 0
     fi
+    case "${FORCE_COLOR:-}${CLICOLOR_FORCE:-}" in
+        '' | 0 | 00)
+            { [ -t 2 ] && [ "${TERM:-}" != dumb ]; } || return 0
+            ;;
+    esac
+    _esc="$(printf '\033')"
+    _reset="$_esc[0m"
+    _bold="$_esc[1m"
+    _dim="$_esc[2m"
+    _red="$_esc[31m"
+    _green="$_esc[32m"
+    _yellow="$_esc[33m"
+    _cyan="$_esc[36m"
 }
 
-say() {
-    [ "${_quiet:-no}" = yes ] || printf 'kurogane-install: %s\n' "$1" >&2
+# step <verb> <message>: a cargo-style status line with the verb right-aligned.
+step() {
+    [ "${_quiet:-no}" = yes ] || printf '%s%12s%s %s\n' "$_green$_bold" "$1" "$_reset" "$2" >&2
+}
+
+# cmd <command>: an indented command for the user to run.
+cmd() {
+    printf '    %s\n' "$_cyan$1$_reset" >&2
+}
+
+note() {
+    [ "${_quiet:-no}" = yes ] || printf '%s %s\n' "$_cyan${_bold}note:$_reset" "$1" >&2
 }
 
 warn() {
-    printf 'kurogane-install: warning: %s\n' "$1" >&2
+    printf '%s %s\n' "$_yellow${_bold}warning:$_reset" "$1" >&2
 }
 
 err() {
-    printf 'kurogane-install: error: %s\n' "$1" >&2
+    printf '%s %s\n' "$_red${_bold}error:$_reset" "$1" >&2
 }
 
 die() {

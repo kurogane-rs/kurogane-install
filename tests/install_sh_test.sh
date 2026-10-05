@@ -223,7 +223,7 @@ check fresh '[ "$("$(BIN)" --version)" = "kurogane $LATEST" ]'
 check fresh 'has "Kurogane $LATEST installed"'
 check fresh 'has "kurogane new my-app"'
 check fresh 'has "kurogane dev"'
-check fresh 'has "verified sha256"'
+check fresh 'has "Verified sha256"'
 check fresh '[ -f "$H/.kurogane/env" ]'
 check fresh '[ "$(count "$H/.profile" "$(SRC_LINE)")" = 1 ]'
 check fresh 'tmp_empty'
@@ -410,7 +410,7 @@ check nix-on-linux '[ $RC -eq 0 ] && has "Nix detected" && [ -x "$(BIN)" ]'
 
 new_case quiet
 run_installer -- -q
-check quiet '[ $RC -eq 0 ] && ! has "downloading" && has "installed"'
+check quiet '[ $RC -eq 0 ] && ! has "Downloading" && has "installed"'
 
 new_case unknown-flag
 run_installer -- --frobnicate

@@ -161,7 +161,7 @@ try {
     Check 'exit 0' { $case.Code -eq 0 }
     Check 'installed latest' { (ExeVersion (Exe)) -eq "kurogane $LatestVersion" }
     Check 'summary' { (Has "Kurogane $LatestVersion installed") -and (Has 'kurogane new my-app') -and (Has 'kurogane dev') }
-    Check 'verified' { Has 'verified sha256' }
+    Check 'verified' { Has 'Verified sha256' }
     Check 'user PATH has bin dir' { (UserPath) -eq $case.Bin }
     Check 'user PATH is REG_EXPAND_SZ' { (UserPathKind) -eq 'ExpandString' }
     Check "native artifact ($hostTriple)" { (Get-Content $case.Log) -match [regex]::Escape("$hostTriple.zip") }
