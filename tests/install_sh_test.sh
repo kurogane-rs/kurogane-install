@@ -494,8 +494,9 @@ if [ -n "${KUROGANE_BIN:-}" ] && [ "$(uname -s)" = Linux ]; then
     printf 'export FOO=1' >"$H/.bashrc" # no trailing newline: the installer adds one
     printf '#!/bin/sh\n' >"$CASE/zsh"
     chmod 755 "$CASE/zsh"
-    # Kurogane's data that uninstalling removes, and a profile it keeps
-    mkdir -p "$H/.config/fish" "$H/.local/share/kurogane/cef/1.0" \
+    # Kurogane's data that uninstalling removes (the Chromium runtimes in
+    # tetsu's shared installation among it), and a profile it keeps
+    mkdir -p "$H/.config/fish" "$H/.local/share/tetsu/cef/1.0/cef_linux_x86_64" \
         "$H/.cache/kurogane/templates/t" "$H/.local/share/kurogane/profiles/app"
     run_installer "PATH=$CASE:$STUBS:$TOOLS" -- --version "$REAL"
     check round-trip-install '[ $RC -eq 0 ] && [ "$(count "$H/.bashrc" "$(SRC_LINE)")" = 1 ]'
@@ -508,14 +509,14 @@ if [ -n "${KUROGANE_BIN:-}" ] && [ "$(uname -s)" = Linux ]; then
     check round-trip '[ "$(cat "$H/.bashrc")" = "export FOO=1" ]'
     # Startup files stay, emptied, even the ones the installer created
     check round-trip '[ -f "$H/.profile" ] && [ ! -s "$H/.profile" ] && [ -f "$H/.zshenv" ] && [ ! -s "$H/.zshenv" ]'
-    check round-trip '[ ! -e "$H/.local/share/kurogane/cef" ] && [ ! -e "$H/.cache/kurogane" ]'
+    check round-trip '[ ! -e "$H/.local/share/tetsu" ] && [ ! -e "$H/.cache/kurogane" ]'
     check round-trip '[ -d "$H/.local/share/kurogane/profiles/app" ] && has "Application profiles stay"'
 
     new_case round-trip-keep-data
-    mkdir -p "$H/.local/share/kurogane/cef/1.0"
+    mkdir -p "$H/.local/share/tetsu/cef/1.0"
     run_installer -- --version "$REAL"
     run_uninstall "$(BIN)" --keep-data
-    check round-trip-keep-data '[ $RC -eq 0 ] && [ ! -e "$H/.kurogane" ] && [ -d "$H/.local/share/kurogane/cef/1.0" ]'
+    check round-trip-keep-data '[ $RC -eq 0 ] && [ ! -e "$H/.kurogane" ] && [ -d "$H/.local/share/tetsu/cef/1.0" ]'
     check round-trip-keep-data '! grep -qF ".kurogane" "$H/.profile"'
 
     new_case round-trip-custom-dir
