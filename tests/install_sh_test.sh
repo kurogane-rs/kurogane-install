@@ -527,6 +527,15 @@ if [ -n "${KUROGANE_BIN:-}" ] && [ "$(uname -s)" = Linux ]; then
     check round-trip-custom-dir '[ $RC -eq 0 ] && [ ! -e "$H/my tools/bin/kurogane" ] && [ -f "$H/my tools/bin/other" ]'
     check round-trip-custom-dir '[ ! -e "$H/.kurogane" ] && ! grep -qF ".kurogane" "$H/.profile"'
 
+    # A home chosen at install time is found from the binary in its bin
+    # folder: a new shell has no KUROGANE_HOME
+    new_case round-trip-custom-home
+    run_installer "KUROGANE_HOME=$H/kh" -- --version "$REAL"
+    check round-trip-custom-home-install '[ $RC -eq 0 ] && [ -f "$H/kh/receipt.json" ] && [ ! -e "$H/.kurogane" ]'
+    run_uninstall "$H/kh/bin/kurogane" --keep-data
+    check round-trip-custom-home '[ $RC -eq 0 ] && has "Kurogane uninstalled" && [ ! -e "$H/kh" ]'
+    check round-trip-custom-home '! grep -qF "kh/env" "$H/.profile"'
+
     new_case round-trip-not-installed
     mkdir -p "$H/elsewhere"
     cp "$KUROGANE_BIN" "$H/elsewhere/kurogane"
