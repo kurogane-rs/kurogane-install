@@ -241,7 +241,7 @@ run_installer --
 check fresh '[ $RC -eq 0 ]'
 check fresh '[ "$("$(BIN)" --version)" = "kurogane $LATEST" ]'
 check fresh 'has "Kurogane $LATEST installed"'
-check fresh 'has "kurogane new my-app"'
+check fresh 'has "kurogane new --name my-app"'
 check fresh 'has "kurogane dev"'
 check fresh 'has "Verified sha256"'
 check fresh '[ -f "$H/.kurogane/env" ]'

@@ -265,7 +265,7 @@ summary() {
     fi
 
     printf '\n%s\n' "Create your first app:" >&2
-    cmd "kurogane new my-app"
+    cmd "kurogane new --name my-app"
     cmd "cd my-app"
     cmd "kurogane dev"
 }

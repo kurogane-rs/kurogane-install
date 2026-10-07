@@ -195,7 +195,7 @@ function Install-Kurogane {
     }
     Write-Host ''
     Write-Host 'Create your first app:'
-    Write-Styled '    kurogane new my-app' Cyan
+    Write-Styled '    kurogane new --name my-app' Cyan
     Write-Styled '    cd my-app' Cyan
     Write-Styled '    kurogane dev' Cyan
 }

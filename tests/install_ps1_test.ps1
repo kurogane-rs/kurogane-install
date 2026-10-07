@@ -193,7 +193,7 @@ try {
     Invoke-Installer
     Check 'exit 0' { $case.Code -eq 0 }
     Check 'installed latest' { (ExeVersion (Exe)) -eq "kurogane $LatestVersion" }
-    Check 'summary' { (Has "Kurogane $LatestVersion installed") -and (Has 'kurogane new my-app') -and (Has 'kurogane dev') }
+    Check 'summary' { (Has "Kurogane $LatestVersion installed") -and (Has 'kurogane new --name my-app') -and (Has 'kurogane dev') }
     Check 'verified' { Has 'Verified sha256' }
     Check 'user PATH has bin dir' { (UserPath) -eq $case.Bin }
     Check 'user PATH is REG_EXPAND_SZ' { (UserPathKind) -eq 'ExpandString' }
