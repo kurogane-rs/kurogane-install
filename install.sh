@@ -365,12 +365,14 @@ download() {
     if [ "${3:-}" = progress ] && [ "${_quiet:-no}" = no ] && [ -t 2 ]; then
         _progress=--progress-bar
     fi
+    # An unreachable address of the host costs part of the connect timeout
+    # instead of the system's own (75 s on macOS)
     if [ -n "$_curl" ]; then
         curl --proto '=https' --tlsv1.2 --fail "$_progress" --show-error --location \
-            --retry 3 --output "$2" "$1"
+            --connect-timeout 20 --retry 3 --output "$2" "$1"
     elif check_cmd wget; then
         if wget --help 2>&1 | grep -q -- '--https-only'; then
-            wget --https-only --secure-protocol=TLSv1_2 --quiet --output-document="$2" "$1"
+            wget --https-only --secure-protocol=TLSv1_2 --connect-timeout=10 --quiet --output-document="$2" "$1"
         else
             # BusyBox wget has no protocol flags; the URL itself is https-only.
             wget -q -O "$2" "$1"

@@ -249,6 +249,7 @@ check fresh '[ "$(count "$H/.profile" "$(SRC_LINE)")" = 1 ]'
 check fresh 'tmp_empty'
 check fresh 'grep -q "x86_64-unknown-linux-musl.tar.gz" "$CASE/dl.log"'
 check fresh 'grep -q -- "--tlsv1.2" "$CASE/dl.log"'
+check fresh 'grep -q -- "--connect-timeout 20" "$CASE/dl.log"'
 check fresh '[ -z "$(ls -A "$H/.kurogane/bin" | grep -v "^kurogane$")" ]'
 check fresh-receipt 'in_receipt "\"schema\": 1," && in_receipt "\"version\": \"$LATEST\","'
 check fresh-receipt 'in_receipt "\"binary\": \"$(BIN)\"," && in_receipt "\"env\": \"$H/.kurogane/env\","'
@@ -358,7 +359,7 @@ check macos-rosetta '[ $RC -eq 0 ] && grep -q "aarch64-apple-darwin" "$CASE/dl.l
 new_case wget-fallback
 run_installer "PATH=$NOCURL:$WGET_DIR:$TOOLS" --
 check wget-fallback '[ $RC -eq 0 ] && [ -x "$(BIN)" ]'
-check wget-fallback 'grep -q "^wget --https-only --secure-protocol=TLSv1_2" "$CASE/dl.log"'
+check wget-fallback 'grep -q "^wget --https-only --secure-protocol=TLSv1_2 --connect-timeout=10" "$CASE/dl.log"'
 
 new_case no-downloader
 run_installer "PATH=$NOCURL:$TOOLS" --
