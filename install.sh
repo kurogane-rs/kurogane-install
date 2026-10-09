@@ -209,13 +209,12 @@ main() {
     fi
     write_receipt
 
+    # New shells read the startup files, whatever this shell's PATH holds
     _path_note=""
-    if on_path "$_bin_dir"; then
-        :
-    elif [ "$_modify_path" = yes ]; then
+    if [ "$_modify_path" = yes ]; then
         setup_path "$_home" "$_bin_dir"
-        _path_note=configured
-    else
+        on_path "$_bin_dir" || _path_note=configured
+    elif ! on_path "$_bin_dir"; then
         _path_note=skipped
     fi
     if [ -n "${GITHUB_PATH:-}" ] && [ -w "${GITHUB_PATH}" ]; then
@@ -450,9 +449,9 @@ EOF
 
 # write_receipt: records where this install puts things in <home>/receipt.json,
 # for `kurogane self uninstall`. It lists every file the PATH setup may touch,
-# whether or not this run touched it, so a reinstall that skips the PATH setup
-# still records it. The paths passed check_safe_path, so they need no escaping
-# inside JSON strings.
+# whether or not this run touched it, so a reinstall with --no-modify-path
+# still records what an earlier install wrote. The paths passed check_safe_path,
+# so they need no escaping inside JSON strings.
 write_receipt() {
     _receipt="$_home/receipt.json"
     _staged_receipt="$_home/.receipt.json.$$"

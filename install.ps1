@@ -147,16 +147,16 @@ function Install-Kurogane {
         Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
     }
 
+    # New terminals take the user PATH from the registry, whatever this window's PATH holds.
     $pathNote = $null
+    if (-not $NoModifyPath -and (Add-UserPath $InstallDir)) {
+        $pathNote = 'configured'
+        Write-Step 'Configured' "user PATH to include $InstallDir"
+    }
     if (-not (Test-PathEntry $env:Path $InstallDir)) {
-        # Make kurogane usable in this window right away, whatever happens below.
+        # Make kurogane usable in this window right away.
         $env:Path = "$InstallDir;$env:Path"
-        if ($NoModifyPath) {
-            $pathNote = 'skipped'
-        } elseif (Add-UserPath $InstallDir) {
-            $pathNote = 'configured'
-            Write-Step 'Configured' "user PATH to include $InstallDir"
-        }
+        if ($NoModifyPath) { $pathNote = 'skipped' }
     }
     try {
         Write-Receipt -Dest $dest -Version $newVersion -InstallDir $InstallDir -AddedToPath ($pathNote -eq 'configured')
@@ -265,7 +265,8 @@ function Test-PathEntry([string]$PathValue, [string]$Dir) {
 
 # Prepends $Dir to the user PATH in the registry, preserving REG_EXPAND_SZ
 # and unexpanded %VARIABLES% in existing entries, then tells running programs
-# (Explorer, new terminals) that the environment changed.
+# (Explorer, new terminals) that the environment changed. Returns whether it
+# added the entry.
 function Add-UserPath([string]$Dir) {
     $keyPath = Get-EnvironmentKeyPath
     $key = Get-Item -LiteralPath $keyPath
@@ -279,7 +280,7 @@ function Add-UserPath([string]$Dir) {
         }
         $current = $key.GetValue('Path', '', 'DoNotExpandEnvironmentNames')
     }
-    if (Test-PathEntry $current $Dir) { return $true }
+    if (Test-PathEntry $current $Dir) { return $false }
     $updated = if ($current) { "$Dir;$current" } else { $Dir }
     Set-ItemProperty -LiteralPath $keyPath -Name Path -Value $updated -Type ExpandString
     if (-not $env:KUROGANE_TEST_ENV_KEY) {

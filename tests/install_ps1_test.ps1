@@ -215,6 +215,14 @@ try {
     Invoke-Installer -Env @{ KUROGANE_INSTALL_DIR = $custom; Path = "$custom;$env:Path" }
     Check 'the receipt keeps the PATH entry' { $case.Code -eq 0 -and (Has 'reinstalled') -and (Receipt).user_path -eq $custom }
 
+    # A terminal opened before an uninstall still has kurogane on its PATH;
+    # new terminals need the user PATH entry all the same
+    New-Case 'stale-terminal'
+    $custom = Join-Path $case.Dir 'tools\bin'
+    Invoke-Installer -Env @{ KUROGANE_INSTALL_DIR = $custom; Path = "$custom;$env:Path" }
+    Check 'the user PATH gets the entry' { $case.Code -eq 0 -and (UserPath) -eq $custom -and (Has 'Configured') }
+    Check 'the receipt names it' { (Receipt).user_path -eq $custom }
+
     New-Case 'user-path-already'
     $custom = Join-Path $case.Dir 'tools\bin'
     Set-ItemProperty -LiteralPath $case.Key -Name Path -Value "C:\a;$custom" -Type ExpandString
@@ -373,6 +381,14 @@ try {
         Invoke-Installer -Env @{ KUROGANE_VERSION = $realVersion }
         Invoke-Uninstall @('--keep-data')
         Check 'a user PATH the installer created is gone again' { $case.Code -eq 0 -and -not ((Get-Item -LiteralPath $case.Key).GetValueNames() -contains 'Path') }
+
+        # A reinstall from the terminal that ran the uninstall, which still
+        # has kurogane on its PATH
+        New-Case 'round-trip-stale-terminal'
+        Invoke-Installer -Env @{ KUROGANE_VERSION = $realVersion }
+        Invoke-Uninstall @('--keep-data')
+        Invoke-Installer -Env @{ KUROGANE_VERSION = $realVersion; Path = "$($case.Bin);$env:Path" }
+        Check 'the user PATH entry is back' { $case.Code -eq 0 -and (UserPath) -eq $case.Bin -and (Receipt).user_path -eq $case.Bin }
 
         New-Case 'round-trip-custom-dir'
         $custom = Join-Path $case.Dir 'my tools\bin'

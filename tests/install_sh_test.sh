@@ -273,10 +273,11 @@ check reinstall '[ "$(count "$H/.bashrc" "$(SRC_LINE)")" = 1 ]'
 check reinstall '[ "$(count "$H/.bashrc" "export FOO=1")" = 1 ]'
 run_installer --
 check reinstall-twice '[ "$(count "$H/.bashrc" "$(SRC_LINE)")" = 1 ]'
-# From a shell that has kurogane on PATH already, the PATH setup is skipped,
-# but the receipt still lists the files it touched
+# From a shell that has kurogane on PATH already, the PATH setup runs again
+# and adds nothing
 run_installer "PATH=$H/.kurogane/bin:$STUBS:$TOOLS" --
 check reinstall-on-path '[ $RC -eq 0 ] && has reinstalled && in_receipt "\"$H/.bashrc\","'
+check reinstall-on-path '[ "$(count "$H/.profile" "$(SRC_LINE)")" = 1 ] && [ "$(count "$H/.bashrc" "$(SRC_LINE)")" = 1 ] && ! has Configured'
 
 new_case upgrade
 run_installer -- --version 0.0.5
@@ -379,9 +380,12 @@ new_case no-modify-path-env
 run_installer KUROGANE_NO_MODIFY_PATH=1 --
 check no-modify-path-env '[ $RC -eq 0 ] && [ ! -e "$H/.profile" ]'
 
+# A shell opened before an uninstall still has kurogane on PATH; new shells
+# need the PATH setup all the same
 new_case already-on-path
 run_installer "PATH=$H/.kurogane/bin:$STUBS:$TOOLS" --
-check already-on-path '[ $RC -eq 0 ] && [ ! -e "$H/.profile" ] && [ ! -e "$H/.kurogane/env" ]'
+check already-on-path '[ $RC -eq 0 ] && [ -f "$H/.kurogane/env" ] && [ "$(count "$H/.profile" "$(SRC_LINE)")" = 1 ]'
+check already-on-path 'has "Configured PATH in $H/.profile" && ! has "To use kurogane in this shell"'
 
 new_case custom-dir
 run_installer -- --install-dir "$H/my tools/bin"
@@ -518,6 +522,15 @@ if [ -n "${KUROGANE_BIN:-}" ] && [ "$(uname -s)" = Linux ]; then
     run_uninstall "$(BIN)" --keep-data
     check round-trip-keep-data '[ $RC -eq 0 ] && [ ! -e "$H/.kurogane" ] && [ -d "$H/.local/share/tetsu/cef/1.0" ]'
     check round-trip-keep-data '! grep -qF ".kurogane" "$H/.profile"'
+
+    # A reinstall from the shell that ran the uninstall, which still has
+    # kurogane on PATH
+    new_case round-trip-stale-shell
+    run_installer -- --version "$REAL"
+    run_uninstall "$(BIN)" --keep-data
+    run_installer "PATH=$H/.kurogane/bin:$STUBS:$TOOLS" -- --version "$REAL"
+    check round-trip-stale-shell '[ $RC -eq 0 ] && [ -f "$H/.kurogane/env" ] && [ "$(count "$H/.profile" "$(SRC_LINE)")" = 1 ]'
+    check round-trip-stale-shell '[ "$(env -i HOME="$H" PATH=/usr/bin:/bin "$TEST_SHELL_PATH" -c ". \"$H/.profile\"; kurogane --version")" = "kurogane $REAL" ]'
 
     new_case round-trip-custom-dir
     mkdir -p "$H/my tools/bin"
