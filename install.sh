@@ -516,13 +516,13 @@ setup_style() {
             ;;
     esac
     _esc="$(printf '\033')"
-    _reset="$_esc[0m"
-    _bold="$_esc[1m"
-    _dim="$_esc[2m"
-    _red="$_esc[31m"
-    _green="$_esc[32m"
-    _yellow="$_esc[33m"
-    _cyan="$_esc[36m"
+    _reset="${_esc}[0m"
+    _bold="${_esc}[1m"
+    _dim="${_esc}[2m"
+    _red="${_esc}[31m"
+    _green="${_esc}[32m"
+    _yellow="${_esc}[33m"
+    _cyan="${_esc}[36m"
 }
 
 # step <verb> <message>: a cargo-style status line with the verb right-aligned.
