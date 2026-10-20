@@ -118,7 +118,9 @@ function New-Case([string]$Name) {
 }
 
 # $Env may also set Path, e.g. to a PATH that already has kurogane on it.
-function Invoke-Installer([hashtable]$Env = @{}, [string]$Mode = 'script', [string]$ScriptArgs = '', [string]$Policy = '') {
+# -NoExit keeps the shell open after the runner, as a window does;
+# [Environment]::Exit closes it.
+function Invoke-Installer([hashtable]$Env = @{}, [string]$Mode = 'script', [string]$ScriptArgs = '', [string]$Policy = '', [switch]$NoExit) {
     $c = $script:case
     $savedPath = $env:Path
     foreach ($n in $caseEnv) { [Environment]::SetEnvironmentVariable($n, $null, 'Process') }
@@ -127,10 +129,13 @@ function Invoke-Installer([hashtable]$Env = @{}, [string]$Mode = 'script', [stri
     $env:KUROGANE_DOWNLOAD_URL = 'https://fixture.invalid/releases'
     $env:KUROGANE_TEST_ENV_KEY = $c.Key
     foreach ($k in $Env.Keys) { [Environment]::SetEnvironmentVariable($k, $Env[$k], 'Process') }
+    $q = { param($s) "'" + ($s -replace "'", "''") + "'" }
     try {
-        if ($Policy) {
+        if ($NoExit) {
+            $cmd = "& $(& $q $runner) -Installer $(& $q $installer) -Fixture $(& $q $fixture) -Mode $Mode; [Environment]::Exit(`$LASTEXITCODE)"
+            $argList = @('-NoProfile', '-NoExit', '-ExecutionPolicy', 'Bypass', '-Command', $cmd)
+        } elseif ($Policy) {
             # A policy that blocks .ps1 files blocks the runner too, so load it as a script block.
-            $q = { param($s) "'" + ($s -replace "'", "''") + "'" }
             $cmd = "& ([scriptblock]::Create([IO.File]::ReadAllText($(& $q $runner)))) -Installer $(& $q $installer) -Fixture $(& $q $fixture) -Mode $Mode"
             if ($ScriptArgs) { $cmd += " -ScriptArgs $(& $q $ScriptArgs)" }
             $argList = @('-NoProfile', '-ExecutionPolicy', $Policy, '-Command', $cmd)
@@ -202,6 +207,7 @@ try {
     Check 'no leftovers' { (Leftovers) -eq 0 }
     Check 'receipt names the binary and its PATH entry' { $r = Receipt; $r.schema -eq 1 -and $r.version -eq $LatestVersion -and $r.binary -eq (Exe) -and $r.user_path -eq $case.Bin }
     Check 'receipt is UTF-8 without a BOM' { -not (ReceiptHasBom) }
+    Check 'a shell that exits points to a new terminal' { (Has 'open a new terminal') -and -not (Has 'works in this window') }
 
     Invoke-Installer
     Check 'reinstall exit 0' { $case.Code -eq 0 -and (Has 'reinstalled') }
@@ -214,6 +220,11 @@ try {
     Invoke-Installer -Env @{ KUROGANE_INSTALL_DIR = $custom }
     Invoke-Installer -Env @{ KUROGANE_INSTALL_DIR = $custom; Path = "$custom;$env:Path" }
     Check 'the receipt keeps the PATH entry' { $case.Code -eq 0 -and (Has 'reinstalled') -and (Receipt).user_path -eq $custom }
+
+    # A shell that stays open has kurogane on its PATH right away
+    New-Case 'window-stays-open'
+    Invoke-Installer -NoExit
+    Check 'it says kurogane works in this window' { (Has 'works in this window') -and -not (Has 'open a new terminal') }
 
     # A terminal opened before an uninstall still has kurogane on its PATH;
     # new terminals need the user PATH entry all the same

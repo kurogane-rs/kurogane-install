@@ -181,7 +181,9 @@ function Install-Kurogane {
     if ($first -and $first.Source -ne $dest) {
         Write-Warn "'$($first.Source)' comes earlier on PATH and shadows this install;`n  remove it (e.g. 'cargo uninstall kurogane-cli') or reorder PATH"
     }
-    if ($pathNote -eq 'configured') {
+    if ($pathNote -eq 'configured' -and (Test-ShellExits)) {
+        Write-Styled '(open a new terminal to use kurogane; this one keeps the PATH it started with)' DarkGray
+    } elseif ($pathNote -eq 'configured') {
         Write-Styled '(kurogane works in this window now; new terminals pick it up automatically)' DarkGray
     } elseif ($pathNote -eq 'skipped') {
         Write-Host ''
@@ -351,6 +353,22 @@ function Write-Styled([string]$Text, [ConsoleColor]$Color, [switch]$NoNewline) {
     } else {
         Write-Host $Text -ForegroundColor $Color -NoNewline:$NoNewline
     }
+}
+
+# True when this PowerShell runs one command or script and exits, as under
+# `powershell -c "irm ...|iex"` from cmd. The shell that started it keeps its
+# PATH. Arguments after the command or script belong to it.
+function Test-ShellExits {
+    foreach ($arg in @([Environment]::GetCommandLineArgs() | Select-Object -Skip 1)) {
+        if ($arg -notmatch '^(-{1,2}|/)([a-z]+)$') { continue }
+        $name = $Matches[2].ToLowerInvariant()
+        if ($name.Length -ge 3 -and 'noexit'.StartsWith($name)) { return $false }
+        if ('command'.StartsWith($name) -or 'file'.StartsWith($name) -or
+            $name -in @('e', 'ec') -or ($name.Length -ge 2 -and 'encodedcommand'.StartsWith($name))) {
+            return $true
+        }
+    }
+    return $false
 }
 
 # True when a person is watching the console rather than a pipe or a log.
