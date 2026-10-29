@@ -3,8 +3,9 @@
 #   powershell -c "irm https://kurogane-rs.org/install.ps1|iex"
 #
 # Installs the prebuilt `kurogane` CLI into `%LOCALAPPDATA%\kurogane\bin` and
-# adds it to the user PATH. Required dependencies are handled later by
-# `kurogane`. What it installed is recorded in
+# adds it to the user PATH. Rust and the MSVC build tools are the user's to
+# install; the summary names the commands when Rust is missing. `kurogane`
+# installs Chromium itself. What it installed is recorded in
 # `%LOCALAPPDATA%\kurogane\receipt.json`, which `kurogane self uninstall`
 # reads. Works with both Windows PowerShell 5.1 and PowerShell 7.
 #
@@ -190,16 +191,39 @@ function Install-Kurogane {
         Write-Host "$InstallDir is not on your user PATH; add it to use kurogane in new terminals."
     }
     if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
-        Write-Host ''
-        Write-Host "Kurogane builds apps with Rust; '" -NoNewline
-        Write-Styled 'kurogane doctor' Cyan -NoNewline
-        Write-Host "' shows what else your machine needs."
+        $cargoHome = if ($env:CARGO_HOME) { $env:CARGO_HOME } else { Join-Path $env:USERPROFILE '.cargo' }
+        if (Test-Path -LiteralPath (Join-Path $cargoHome 'bin\cargo.exe')) {
+            Write-Host ''
+            Write-Warn 'Rust is installed but cargo is not on PATH in this terminal. Open a new terminal to use it.'
+        } else {
+            Write-RustSetup
+        }
     }
     Write-Host ''
     Write-Host 'Create your first app:'
     Write-Styled '    kurogane new --name my-app' Cyan
     Write-Styled '    cd my-app' Cyan
     Write-Styled '    kurogane dev' Cyan
+}
+
+# Writes the commands that install Rust and the build tools apps need.
+function Write-RustSetup {
+    Write-Host ''
+    Write-Warn 'Rust is not installed. Kurogane builds apps with it, so install it first:'
+    if (-not (Test-MsvcTools)) {
+        Write-Styled '    winget install Microsoft.VisualStudio.2022.BuildTools --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"' Cyan
+    }
+    Write-Styled '    winget install Rustlang.Rustup' Cyan
+    Write-Host 'Then open a new terminal and check what else your machine needs:'
+    Write-Styled '    kurogane doctor' Cyan
+}
+
+# True when Visual Studio or its Build Tools include the MSVC C++ toolset.
+function Test-MsvcTools {
+    $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+    if (-not (Test-Path -LiteralPath $vswhere)) { return $false }
+    $found = & $vswhere -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null
+    return [bool]$found
 }
 
 # Native machine architecture, not the architecture of this PowerShell

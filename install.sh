@@ -4,8 +4,9 @@
 #   curl --proto '=https' --tlsv1.2 -LsSf https://kurogane-rs.org/install.sh | sh
 #
 # Installs the prebuilt `kurogane` CLI into a per-user directory and adds it
-# to PATH. Dependencies such as Rust, Chromium, and platform toolchains are
-# installed or configured later by `kurogane` itself. What it installed is
+# to PATH. Rust and the platform build tools are the user's to install; the
+# summary names the commands when Rust is missing. `kurogane` installs
+# Chromium itself. What it installed is
 # recorded in <home>/receipt.json, which `kurogane self uninstall` reads.
 #
 # The script only defines functions; `main` runs on the very last line, so a
@@ -259,14 +260,33 @@ summary() {
             ;;
     esac
 
-    if ! command -v cargo >/dev/null 2>&1 && [ ! -x "${CARGO_HOME:-${HOME:-}/.cargo}/bin/cargo" ]; then
-        printf '\n%s\n' "Kurogane builds apps with Rust; '$_cyan${_bold}kurogane doctor$_reset' shows what else your machine needs." >&2
+    if ! check_cmd cargo; then
+        _cargo_home="${CARGO_HOME:-${HOME:-}/.cargo}"
+        if [ -x "$_cargo_home/bin/cargo" ]; then
+            printf '\n' >&2
+            warn "Rust is installed but cargo is not on PATH in this shell. Open a new terminal or run:"
+            cmd ". \"$_cargo_home/env\""
+        else
+            rust_setup
+        fi
     fi
 
     printf '\n%s\n' "Create your first app:" >&2
     cmd "kurogane new --name my-app"
     cmd "cd my-app"
     cmd "kurogane dev"
+}
+
+# Writes the commands that install Rust and the build tools apps need.
+rust_setup() {
+    printf '\n' >&2
+    warn "Rust is not installed. Kurogane builds apps with it, so install it first:"
+    if [ "$_os" = Darwin ] && ! xcode-select -p >/dev/null 2>&1; then
+        cmd "xcode-select --install"
+    fi
+    cmd "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
+    printf '%s\n' "Then open a new terminal and check what else your machine needs:" >&2
+    cmd "kurogane doctor"
 }
 
 # Prints the ASCII logo, only for a person watching a terminal.
